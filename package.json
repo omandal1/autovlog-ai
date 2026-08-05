@@ -3,13 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.15.0"
   },
   "scripts": {
     "dev": "next dev",
     "dev:frontend": "next dev",
     "dev:backend": "npm run backend",
-    "backend": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json server/start.ts",
+    "backend": "node --use-system-ca ./node_modules/ts-node/dist/bin.js -r tsconfig-paths/register --project tsconfig.scripts.json server/start.ts",
     "build": "next build",
     "start": "next start",
     "check": "next typegen && tsc --noEmit",

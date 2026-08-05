@@ -27,13 +27,17 @@ The browser never receives raw filesystem paths. Every project, asset, soundtrac
 
 ## Requirements
 
-- Node.js 22 or newer
+- Node.js 22.15 or newer
 - MongoDB Community Server or another reachable MongoDB deployment
 - A Firebase project with Authentication enabled
 - Python 3.10+ only if using the optional analysis sidecar
 - Local disk space for original media, processed files, temporary renders, and outputs
 
 FFmpeg and FFprobe use the bundled `ffmpeg-static` and `ffprobe-static` packages unless explicit paths are configured.
+
+## Cost guardrail
+
+The local AutoVlog setup is designed to run without paid cloud resources: MongoDB Community Server and media storage stay on the local machine, while Firebase remains on the no-cost Spark plan for email/password and Google authentication. Do not enable Google Cloud billing or upgrade Firebase to the Blaze plan for local development.
 
 ## First-time setup
 
@@ -85,7 +89,7 @@ FIREBASE_CLIENT_EMAIL=firebase-adminsdk-...@your-project.iam.gserviceaccount.com
 FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
 ```
 
-Instead of embedding a private key, local development can set `GOOGLE_APPLICATION_CREDENTIALS` to a service-account JSON file. Secrets must never use a `NEXT_PUBLIC_` prefix or be committed.
+Instead of embedding a private key, local development can save the service-account JSON as `.secrets/firebase-admin.json` and set `GOOGLE_APPLICATION_CREDENTIALS` to its absolute path. The `.secrets` directory is ignored by Git. Secrets must never use a `NEXT_PUBLIC_` prefix or be committed.
 
 If Firebase client settings are missing, the login screen shows a configuration message. If Firebase Admin is missing, the API stays up but authenticated routes return a clear `503` configuration error.
 
