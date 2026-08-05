@@ -1,203 +1,233 @@
 # AutoVlog AI
 
-AutoVlog AI is a production-oriented local app that ingests 100 to 300 uploaded images and videos, analyzes them, generates preview variants, and renders:
+AutoVlog AI turns a user's photos, videos, and optional MP3 files into durable personal-memory videos. It is now split into a Vercel-ready Next.js frontend and a local/self-hosted API that owns authentication checks, MongoDB metadata, large files, analysis, and FFmpeg rendering.
 
-- one 5-minute cinematic college vlog recap
-- three to ten 1-minute chapter mini-vlogs
+The supported products are:
 
-The app is fully local for the MVP: Next.js 14 provides the UI and Node orchestration, FastAPI augments analysis and chapter labeling, and FFmpeg performs all media preprocessing and final rendering.
+- **Diary / Notebook Memory Book** — the existing physical-book presentation, diary text, page turns, uploaded soundtrack mixing, one master, and chapter mini-vlogs.
+- **Wall Frame Memories** — an original gallery-wall montage with balanced frame clusters, photo/video frames, stable camera glides, parallax, captions, uploaded soundtrack mixing, and focused source-video audio. It produces one Wall Frame master.
 
-## Stack
+Apple Music, Modern Vlog, social-trend scraping, and TikTok/Instagram modes are not part of this product.
 
-- Frontend: Next.js 14 App Router, React, TypeScript, TailwindCSS
-- Backend: Node.js route handlers inside Next.js
-- Analysis service: FastAPI microservice in `backend-python`
-- Media engine: FFmpeg via `ffmpeg-static` and `ffprobe-static`
-- Storage: local filesystem under `storage/projects`
-
-## Pipeline
-
-1. `ingest`
-   - Saves original uploads with unique IDs
-   - Extracts EXIF/video metadata
-   - Persists a project record to local storage
-2. `preprocess`
-   - Normalizes images
-   - Generates thumbnails
-   - Builds video proxies and keyframes
-3. `analysis`
-   - Detects duplicates and weak media
-   - Adds dialogue/transcript metadata when available
-   - Clusters recurring friend-like faces heuristically
-   - Persists explainable selection and skip reasons
-4. `score`
-   - Runs deterministic heuristics first
-   - Optionally asks the FastAPI service for score boosts and semantic hints
-5. `group`
-   - Orders assets chronologically
-   - Splits them into time-based chapters
-   - Labels chapters with Python heuristics or a deterministic fallback
-6. `story`
-   - Builds a story plan with highlights, anchors, chapter plans, and titles
-   - Generates up to three preview plan variants for comparison
-   - Respects pin/exclude decisions and user steering controls
-7. `render`
-   - Renders every clip with FFmpeg
-  - Preserves source audio and mixes it with uploaded MP3 or local fallback music beds
-   - Uses book-style cover pages, spreads, dividers, and page-turn transitions
-   - Applies beat-aware timing when music analysis is available
-   - Produces final MP4 outputs
-
-## Project structure
+## Architecture
 
 ```text
-app/                   Next.js frontend and API routes
-components/            Upload, preview, steering, and dashboard UI
-lib/                   Shared types, helpers, pipeline orchestration
-media-processing/      Metadata extraction and preprocessing
-scoring/               Deterministic scoring + Python service integration
-lib/analysis/          Duplicate detection, transcription, quality tiers, face clustering
-lib/story/             Story planning and chapter intelligence
-lib/preview/           Preview plan generation and validation
-lib/themes/            Theme presets and visual styling registry
-timeline/              Chaptering and timeline generation
-render/                FFmpeg render pipeline
-backend-python/        FastAPI service
-scripts/               FFmpeg helpers and demo runner
-storage/               Local storage abstraction
-samples/               Example timeline JSON
+Next.js frontend (local or Vercel)
+  -> Firebase Auth (Google and email/password)
+  -> Firebase ID token in Authorization: Bearer ...
+  -> Express API (local/self-hosted, port 8787)
+       -> Firebase Admin token verification
+       -> MongoDB metadata and ownership queries
+       -> LocalStorageProvider under storage/users/...
+       -> local media analysis + FFmpeg render pipeline
+       -> optional FastAPI analysis sidecar (port 8001)
 ```
 
-## Local setup
+The browser never receives raw filesystem paths. Every project, asset, soundtrack, job, and output lookup is scoped to the authenticated local user record. Large uploads are streamed to disk, and video delivery supports HTTP byte ranges.
 
-### 1. Install Node dependencies
+## Requirements
 
-```bash
+- Node.js 22 or newer
+- MongoDB Community Server or another reachable MongoDB deployment
+- A Firebase project with Authentication enabled
+- Python 3.10+ only if using the optional analysis sidecar
+- Local disk space for original media, processed files, temporary renders, and outputs
+
+FFmpeg and FFprobe use the bundled `ffmpeg-static` and `ffprobe-static` packages unless explicit paths are configured.
+
+## First-time setup
+
+Install Node dependencies:
+
+```powershell
 npm install
 ```
 
-### 2. Install Python dependencies
+Copy the environment template:
 
-```bash
-python -m pip install -r backend-python/requirements.txt
+```powershell
+Copy-Item .env.example .env.local
 ```
 
-### 3. Start the Python service
+The backend loads `.env.local` and `.env`; Next.js loads `.env.local`.
 
-```bash
+Start MongoDB, then confirm that `DATABASE_URL` points to it. A common local value is:
+
+```env
+DATABASE_URL=mongodb://127.0.0.1:27017
+MONGODB_DB_NAME=autovlog
+```
+
+The API intentionally starts in a degraded state when MongoDB is unavailable. `/health` returns `503`, and authenticated data routes return a clear database configuration error instead of silently using temporary data.
+
+## Firebase setup
+
+1. Create or select a Firebase project.
+2. In **Authentication > Sign-in method**, enable Email/Password and Google.
+3. Register a Firebase Web app and copy its public values into the `NEXT_PUBLIC_FIREBASE_*` variables.
+4. Create a Firebase Admin service account and put its project ID, client email, and private key in the backend-only variables.
+5. Add `localhost` and the eventual Vercel domain to Firebase Authentication's authorized domains.
+
+Example client configuration:
+
+```env
+NEXT_PUBLIC_FIREBASE_API_KEY=...
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=your-project
+NEXT_PUBLIC_FIREBASE_APP_ID=...
+```
+
+Example server configuration:
+
+```env
+FIREBASE_PROJECT_ID=your-project
+FIREBASE_CLIENT_EMAIL=firebase-adminsdk-...@your-project.iam.gserviceaccount.com
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+```
+
+Instead of embedding a private key, local development can set `GOOGLE_APPLICATION_CREDENTIALS` to a service-account JSON file. Secrets must never use a `NEXT_PUBLIC_` prefix or be committed.
+
+If Firebase client settings are missing, the login screen shows a configuration message. If Firebase Admin is missing, the API stays up but authenticated routes return a clear `503` configuration error.
+
+## Run locally
+
+Use two terminals from the repository root.
+
+Terminal 1 — authenticated local API, MongoDB access, storage, and rendering:
+
+```powershell
+npm run dev:backend
+```
+
+Terminal 2 — Next.js frontend:
+
+```powershell
+npm run dev:frontend
+```
+
+Open `http://127.0.0.1:3000`. The API is at `http://127.0.0.1:8787`; its public health endpoint is `http://127.0.0.1:8787/health`.
+
+The Python sidecar is optional. To enable its extra scoring, chapter-label, and transcription hints:
+
+```powershell
+python -m pip install -r backend-python/requirements.txt
 npm run python
 ```
 
-### 4. Start the Next.js app
+When the sidecar is offline, deterministic Node.js analysis remains active.
 
-```bash
-npm run dev
+## Environment variables
+
+The complete, secret-free template is in `.env.example`.
+
+| Variable | Used by | Purpose |
+| --- | --- | --- |
+| `NEXT_PUBLIC_API_BASE_URL` | frontend | Reachable Express API origin |
+| `NEXT_PUBLIC_FIREBASE_*` | frontend | Firebase Web app configuration |
+| `DATABASE_URL` | backend | MongoDB connection string |
+| `MONGODB_DB_NAME` | backend | MongoDB database name |
+| `STORAGE_ROOT` | backend | Local storage root; defaults to `./storage` |
+| `FIREBASE_PROJECT_ID` | backend | Firebase Admin project |
+| `FIREBASE_CLIENT_EMAIL` | backend | Firebase Admin service-account email |
+| `FIREBASE_PRIVATE_KEY` | backend | Firebase Admin private key |
+| `FRONTEND_ORIGIN` | backend | Comma-separated allowed browser origins |
+| `HOST`, `PORT` | backend | API bind address and port |
+| `MAX_*` | backend | Upload byte/count limits |
+| `FILE_TICKET_*` | backend | Signed streaming link secret and TTL (defaults to 900 seconds; maximum 3600) |
+| `PYTHON_SERVICE_URL` | render pipeline | Optional analysis sidecar URL |
+| `FFMPEG_PATH`, `FFPROBE_PATH` | render pipeline | Optional binary overrides |
+
+## Local storage
+
+Large files are not stored as MongoDB blobs and are not written to Vercel's filesystem. MongoDB stores metadata and server-only local paths. `LocalStorageProvider` creates this structure:
+
+```text
+storage/
+  users/<localUserId>/projects/<projectId>/
+    uploads/images/
+    uploads/videos/
+    uploads/music/
+    processed/thumbnails/
+    processed/proxies/
+    processed/frames/
+    renders/master/
+    renders/chapters/
+    renders/wall-frame/
+    metadata/
+    temp/
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Path segments are validated, client paths are ignored, stored paths are checked against the owned project root, and project deletion is constrained to that root. Runtime user files are ignored by Git.
 
-## Quick start from the workspace root
+`StorageProvider` is the extension boundary for a future S3, R2, or Firebase Storage implementation. Replacing local storage does not require changing browser DTOs or project ownership rules.
 
-If you are currently in `D:\Downloads\projects\codex_projects`, use:
+## Upload and soundtrack behavior
+
+- Media and MP3 files belong to a project and persist across refreshes.
+- Uploads use disk-backed multipart handling instead of buffering multi-GB video files in memory.
+- MP3 extensions, MIME types, signatures, and configured limits are validated.
+- Multiple uploaded MP3s are analyzed for duration, loudness, silence edges, energy, and estimated tempo.
+- If detailed MP3 analysis fails but FFprobe confirms valid usable audio, a conservative duration/volume plan is used.
+- When any MP3s are selected, only those MP3s provide background music. Source-video audio can still be mixed and ducks the music.
+- Without an uploaded MP3, the local royalty-free library supplies fallback music.
+
+## Render jobs and outputs
+
+Starting a render creates a MongoDB `RenderJob`. Progress, current stage, errors, settings snapshots, and plan paths persist. Successful files are validated before `RenderOutput` records are created.
+
+Diary mode renders the master and chapter timelines. Wall Frame mode renders one main `wall-frame` output and uses its own deterministic layout validation, repair, and simpler Wall Frame fallback; it does not silently switch to Diary mode.
+
+Output preview/download links are short-lived signed tickets issued only after an authenticated ownership check. Tickets default to a 15-minute lifetime (`FILE_TICKET_TTL_SECONDS=900`) and are capped at one hour. The ticket endpoint rechecks the output record and preserves byte-range streaming, so the browser does not have to buffer an entire large render.
+
+## Vercel frontend deployment
+
+Only the Next.js frontend should be deployed to Vercel. The old Next.js filesystem/render API routes have been removed; heavy FFmpeg work remains in `server/`.
+
+1. Import the GitHub repository into Vercel.
+2. Configure the five `NEXT_PUBLIC_*` variables for each Vercel environment.
+3. Set `NEXT_PUBLIC_API_BASE_URL` to the public **HTTPS** address of the self-hosted API.
+4. Add the Vercel domain to Firebase authorized domains.
+5. Add the same exact Vercel origin to the backend's `FRONTEND_ORIGIN` and restart the backend.
+
+`127.0.0.1` works only when the browser and API are on the same machine. A hosted frontend used from other devices needs the local API exposed through a securely configured HTTPS reverse proxy or tunnel. Protect that endpoint, keep Firebase verification enabled, and do not expose MongoDB or the storage directory directly.
+
+## Legacy projects
+
+Old JSON projects under `storage/projects` are left untouched. They are never auto-attached to a Firebase account, because many have no verifiable owner and project-ID guessing must not grant access.
+
+Run the read-only audit:
 
 ```powershell
-.\run-autovlog-ai.ps1
+npm run audit:legacy
+npm run audit:legacy -- --json
 ```
 
-That script starts both the FastAPI service and the Next.js dev server in the correct project folder.
+Unknown or removed legacy generation modes should be treated as Diary during any future explicit, owner-verified import. The authenticated API writes all new projects to the new user/project layout.
 
-## Optional environment configuration
+## Validation
 
-Copy `.env.example` to `.env.local` if you want to override the defaults:
-
-```bash
-PYTHON_SERVICE_URL=http://127.0.0.1:8001
-STORAGE_ROOT=./storage/projects
-FFMPEG_PATH=
-FFPROBE_PATH=
+```powershell
+npm run check
+npm test
+npm run build
 ```
 
-If `FFMPEG_PATH` or `FFPROBE_PATH` are omitted, the app uses the binaries from `ffmpeg-static` and `ffprobe-static`.
+`npm test` runs API ownership/upload/range tests and deterministic Wall Frame planning/repair validation. An optional real FFmpeg Wall Frame smoke pass can be run with:
 
-Uploaded MP3 soundtracks are stored with the project and used exclusively when provided. If no
-MP3 files are uploaded, the renderer uses the built-in royalty-free/local fallback music library.
-
-## Demo run from a local folder
-
-```bash
-npm run demo -- ./your-media-folder balanced fast-cuts cinematic
+```powershell
+$env:WALL_FRAME_RENDER_SMOKE='1'
+npm run validate:wall-frame
 ```
 
-That command will:
+## Wall Frame originality note
 
-- create a project from every supported file in the folder
-- generate preview plans
-- render the selected preview plan
-- print the rendered output paths
+Wall Frame Memories uses the broad idea of moving among framed personal memories. Its layout system, frame treatments, camera paths, captions, timing, fallback logic, and audio rules are original to AutoVlog AI. It does not include Disney branding, show music, protected typography, or a copied sequence from the cited television intro reference.
 
-## Example input/output
+Repository: <https://github.com/omandal1/autovlog-ai>
 
-### Example input
+Official setup references:
 
-- 240 mixed uploads
-- 160 photos
-- 80 videos
-- spread across three weeks of campus life
-
-### Example output
-
-- `master_*.mp4` in `storage/projects/<projectId>/outputs`
-- `chapter_*.mp4` files for each chapter
-- timeline JSON in `storage/projects/<projectId>/timelines`
-- derived thumbnails, normalized images, proxies, and keyframes
-
-## Timeline format
-
-Sample files live in:
-
-- `samples/sample-master-timeline.json`
-- `samples/sample-chapter-timeline.json`
-
-Each timeline contains:
-
-- render profile
-- ordered clip list
-- clip trim windows
-- chapter IDs
-- user-selected steering settings
-- page/book render metadata
-- transition and audio planning data
-
-## Failsafe behavior
-
-When advanced analysis is unavailable, the app still:
-
-- scores deterministically in Node
-- creates fallback chapter names
-- builds preview plans with deterministic heuristics
-- renders valid MP4 outputs with local audio and simplified planning
-
-## Core modules
-
-- `lib/project-service.ts`
-  - upload, analysis, preview generation, render orchestration, and persistence
-- `lib/analysis/*`
-  - duplicate, quality, transcript, and face-aware enrichment
-- `lib/story/story-planner.ts`
-  - highlight detection, anchor selection, and title generation
-- `lib/preview/preview-plan-builder.ts`
-  - preview variants and selected-plan preparation
-- `media-processing/metadata.ts`
-  - EXIF/video probing and chronological ordering helpers
-- `media-processing/preprocess.ts`
-  - thumbnails, normalized images, video proxies, and keyframes
-- `scoring/heuristics.ts`
-  - clarity, brightness, contrast, motion, uniqueness, duration scoring
-- `timeline/chaptering.ts`
-  - chapter boundary detection and fallback labels
-- `timeline/generator.ts`
-  - master and chapter timeline assembly from the selected story plan
-- `render/render-service.ts`
-  - FFmpeg book-page rendering, audio mixing, transitions, and final muxing
-- `backend-python/main.py`
-  - optional score boosts, chapter labeling, and transcript metadata
+- Firebase Web Authentication: <https://firebase.google.com/docs/auth/web/start>
+- Firebase Admin ID-token verification: <https://firebase.google.com/docs/auth/admin/verify-id-tokens>
+- MongoDB Node.js driver: <https://www.mongodb.com/docs/drivers/node/current/>
+- Vercel environment variables: <https://vercel.com/docs/environment-variables/framework-environment-variables>

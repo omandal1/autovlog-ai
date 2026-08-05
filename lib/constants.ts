@@ -163,11 +163,19 @@ export const DEFAULT_GENERATION_SETTINGS: GenerationSettings = {
   themePreset: "scrapbook",
   titleStyle: "nostalgic",
   decorationLevel: "balanced",
-  aspectRatio: "landscape-16x9"
+  aspectRatio: "landscape-16x9",
+  wallFrameStyleSettings: {
+    frameStyle: "mixed-scrapbook",
+    wallStyle: "dorm-room-wall",
+    cameraMotion: "balanced",
+    captionStyle: "memory-captions",
+    aspectRatio: "landscape-16x9"
+  }
 };
 
 export const GENERATION_MODE_LABELS: Record<GenerationMode, string> = {
-  "memory-book": "Memory Book"
+  "memory-book": "Diary / Notebook Memory Book",
+  "wall-frame": "Wall Frame Memories"
 };
 
 export const ASPECT_RATIO_LABELS: Record<AspectRatioOption, string> = {

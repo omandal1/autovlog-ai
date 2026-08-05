@@ -24,6 +24,7 @@ import type {
   ThemePreset,
   TitleStyle
 } from "@/lib/types";
+import { normalizeWallFrameSettings } from "@/lib/wall-frame/style-registry";
 
 export const pacingOptions: Array<{ value: PacingMode; label: string }> = [
   { value: "fast", label: "Fast" },
@@ -32,11 +33,13 @@ export const pacingOptions: Array<{ value: PacingMode; label: string }> = [
 ];
 
 export function normalizeGenerationSettings(settings?: Partial<GenerationSettings>) {
+  const generationMode = settings?.generationMode === "wall-frame" ? "wall-frame" : "memory-book";
   return {
     ...DEFAULT_GENERATION_SETTINGS,
     ...settings,
-    generationMode: "memory-book",
-    aspectRatio: "landscape-16x9"
+    generationMode,
+    aspectRatio: "landscape-16x9",
+    wallFrameStyleSettings: normalizeWallFrameSettings(settings?.wallFrameStyleSettings)
   } satisfies GenerationSettings;
 }
 
@@ -102,7 +105,7 @@ export function normalizeMusicSelectionSettings(
     note:
       selection.note ??
       (uploadedSoundtracks.length
-        ? "Using uploaded MP3 soundtrack material for the final memory-book render."
+        ? "Using uploaded MP3 soundtrack material for the final AutoVlog render."
         : undefined),
     uploadedSoundtracks,
     preferredTrackOrder:

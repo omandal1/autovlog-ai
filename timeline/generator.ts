@@ -595,8 +595,9 @@ export function buildProjectTimelines(project: ProjectRecord) {
       .filter((chapter): chapter is Chapter => Boolean(chapter)) ?? project.chapters;
   const chapterTimelines: Timeline[] = [];
   const reservedAssets = new Set<string>();
+  const wallFrameOnly = project.settings.generation?.generationMode === "wall-frame";
 
-  for (const chapter of storyChapterOrder) {
+  for (const chapter of wallFrameOnly ? [] : storyChapterOrder) {
     const chapterAssets = chapter.assetIds
       .map((assetId) => assetMap.get(assetId))
       .filter((asset): asset is MediaAsset => Boolean(asset));
@@ -622,6 +623,7 @@ export function buildProjectTimelines(project: ProjectRecord) {
     assets: project.assets,
     chapters: storyChapterOrder,
     usedAssetIds:
+      !wallFrameOnly &&
       project.assets.length >= 24 && reservedAssets.size <= project.assets.length - 8
         ? new Set(reservedAssets)
         : undefined

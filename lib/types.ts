@@ -8,7 +8,12 @@ export type StoryStyle =
   | "emotional"
   | "energetic"
   | "balanced";
-export type GenerationMode = "memory-book";
+import type {
+  WallFrameRenderPlan,
+  WallFrameStyleSettings
+} from "@/lib/wall-frame/types";
+
+export type GenerationMode = "memory-book" | "wall-frame";
 export type SubjectEmphasis =
   | "friends"
   | "campus-scenery"
@@ -79,6 +84,7 @@ export type PipelineStage =
   | "complete"
   | "failed";
 export type OutputKind = "master" | "chapter";
+export type RenderOutputKind = OutputKind | "wall-frame";
 export type AssetVariant = "original" | "thumbnail" | "normalized" | "proxy";
 export type ExportAudioPolicy =
   | "internal-licensed"
@@ -114,6 +120,7 @@ export interface GenerationSettings {
   titleStyle: TitleStyle;
   decorationLevel: DecorationLevel;
   aspectRatio: AspectRatioOption;
+  wallFrameStyleSettings?: WallFrameStyleSettings;
 }
 
 export interface SoundtrackAnalysis {
@@ -830,6 +837,7 @@ export interface Timeline {
   beatAnalysis?: BeatAnalysis;
   soundtrackPlan?: SoundtrackPlan;
   book?: BookRenderPlan;
+  wallFrame?: WallFrameRenderPlan;
   chapterOrder: string[];
   renderProfile: {
     width: number;
@@ -842,7 +850,7 @@ export interface Timeline {
 export interface RenderedOutput {
   id: string;
   projectId: string;
-  kind: OutputKind;
+  kind: RenderOutputKind;
   planId?: string;
   chapterId?: string;
   title: string;

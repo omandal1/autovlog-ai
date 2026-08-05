@@ -4,7 +4,7 @@ import { analyzeDuplicateMedia } from "@/lib/analysis/duplicate-detector";
 import { clusterRecurringFaces } from "@/lib/analysis/face-clustering";
 import { applyQualityTiers } from "@/lib/analysis/quality-filter";
 import { enrichAssetsWithTranscription } from "@/lib/analysis/transcription";
-import { analyzeMp3File, validateMp3Upload } from "@/lib/audio/soundtrack-analysis";
+import { analyzeMp3FileWithFallback, validateMp3Upload } from "@/lib/audio/soundtrack-analysis";
 import { SOUNDTRACK_UPLOAD_POLICY } from "@/lib/constants";
 import { createId } from "@/lib/ids";
 import { buildPreviewPlanVariants } from "@/lib/preview/preview-plan-builder";
@@ -187,7 +187,7 @@ async function saveAndAnalyzeSoundtracks(projectId: string, files: File[]) {
     const soundtrackPath = await saveProjectMusicBuffer(projectId, file.name, buffer);
     const id = createId("snd", 8);
     try {
-      const analysis = await analyzeMp3File(soundtrackPath, file.name);
+      const analysis = await analyzeMp3FileWithFallback(soundtrackPath, file.name);
       soundtracks.push({
         id,
         filename: file.name,
@@ -429,7 +429,10 @@ export async function renderSelectedPreview(
 
   await markStage(projectId, "render");
   const selectedProject = await persistSelectedPreviewPlan(projectId, plan);
-  const timelineList = [plan.masterTimeline, ...plan.chapterTimelines];
+  const timelineList =
+    selectedProject.settings.generation?.generationMode === "wall-frame"
+      ? [plan.masterTimeline]
+      : [plan.masterTimeline, ...plan.chapterTimelines];
 
   try {
     const outputs = (await renderProjectTimelines(selectedProject, timelineList)).map((output) => ({

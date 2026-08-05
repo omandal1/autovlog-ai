@@ -4,6 +4,8 @@ node_modules
 .run-logs
 storage/projects
 storage/accounts
+storage/users
+storage/.incoming
 dist
 *.log
 __pycache__

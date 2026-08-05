@@ -23,6 +23,7 @@ import {
 } from "@/lib/render/ffmpeg-command-builder";
 import { renderPhysicalBookTransition } from "@/lib/render/book-animation-compositor";
 import { prepareTimelineForRender } from "@/lib/render/prepare-render-plan";
+import { renderWallFramePlan } from "@/lib/render/wall-frame-render-strategy";
 import {
   assertValidVideoFile,
   formatVideoDiagnostics,
@@ -48,6 +49,19 @@ interface TimelinePiece {
   path: string;
   durationSec: number;
   kind: "body" | "transition";
+}
+
+export interface RenderTimelineDestination {
+  outputPath?: string;
+  timelinePath?: string;
+  renderPlanPath?: string;
+  tempRoot?: string;
+  downloadRoute?: string;
+  onProgress?: (update: {
+    stage: string;
+    progress: number;
+    detail: string;
+  }) => void | Promise<void>;
 }
 
 const RENDER_CACHE_VERSION = "diary-notebook-v2";
@@ -1884,16 +1898,54 @@ async function buildBookVideoAssembly(
   return stitchedVideoPath;
 }
 
-export async function renderTimeline(project: ProjectRecord, baseTimeline: Timeline) {
+export async function renderTimeline(
+  project: ProjectRecord,
+  baseTimeline: Timeline,
+  destination: RenderTimelineDestination = {}
+) {
   const timeline = await prepareTimelineForRender(project, baseTimeline);
 
   const paths = getProjectPaths(project.id);
-  const tempDir = buildRunScopedTempDir(paths.tempDir, timeline.id);
-  const outputPath = path.join(paths.outputsDir, `${timeline.id}.mp4`);
-  const timelinePath = path.join(paths.timelinesDir, `${timeline.id}.json`);
+  const tempRoot = destination.tempRoot ?? paths.tempDir;
+  const tempDir = buildRunScopedTempDir(tempRoot, timeline.id);
+  const outputPath = destination.outputPath ?? path.join(paths.outputsDir, `${timeline.id}.mp4`);
+  const timelinePath =
+    destination.timelinePath ?? path.join(paths.timelinesDir, `${timeline.id}.json`);
 
-  await mkdir(tempDir, { recursive: true });
+  await Promise.all([
+    mkdir(tempDir, { recursive: true }),
+    mkdir(path.dirname(outputPath), { recursive: true })
+  ]);
   await writeJson(timelinePath, timeline);
+
+  if (timeline.settings.generation?.generationMode === "wall-frame") {
+    if (!timeline.wallFrame?.wallSections.length) {
+      throw new Error(`Timeline ${timeline.id} did not produce a Wall Frame render plan.`);
+    }
+    const result = await renderWallFramePlan({
+      plan: timeline.wallFrame,
+      outputPath,
+      tempRoot,
+      renderPlanPath:
+        destination.renderPlanPath ??
+        path.join(path.dirname(timelinePath), `${timeline.id}.wall-frame-plan.json`),
+      onProgress: destination.onProgress
+        ? async (update) => destination.onProgress?.(update)
+        : undefined
+    });
+
+    return {
+      id: timeline.id,
+      projectId: project.id,
+      kind: "wall-frame",
+      title: timeline.title,
+      durationSec: result.durationSec,
+      timelinePath,
+      outputPath,
+      downloadRoute:
+        destination.downloadRoute ?? `/api/projects/${project.id}/downloads/${timeline.id}`
+    } satisfies RenderedOutput;
+  }
 
   const clipMap = new Map(timeline.clips.map((clip) => [clip.id, clip]));
   if (!timeline.book?.pages?.length) {
@@ -1935,8 +1987,16 @@ export async function renderTimeline(project: ProjectRecord, baseTimeline: Timel
   const mixedAudioPath = path.join(tempDir, "mixed-audio.m4a");
 
   const clipStartTimes = calculateClipTimings(timeline);
+  const requiresUploadedMusic = timeline.soundtrackPlan?.sourcePolicy === "user-uploaded-audio";
   const [musicPath, sourceAudioPath] = await Promise.all([
-    composeMusicBed(timeline, musicBedPath).catch(() => undefined),
+    composeMusicBed(timeline, musicBedPath).catch((error) => {
+      if (requiresUploadedMusic) {
+        throw new Error(
+          `The uploaded MP3 soundtrack could not be rendered: ${summarizeRenderError(error)}`
+        );
+      }
+      return undefined;
+    }),
     composeSourceAudioBed(timeline, clipStartTimes, sourceBedPath).catch(() => undefined)
   ]);
 
@@ -1964,7 +2024,8 @@ export async function renderTimeline(project: ProjectRecord, baseTimeline: Timel
     durationSec: timeline.actualDurationSec,
     timelinePath,
     outputPath,
-    downloadRoute: `/api/projects/${project.id}/downloads/${timeline.id}`
+    downloadRoute:
+      destination.downloadRoute ?? `/api/projects/${project.id}/downloads/${timeline.id}`
   } satisfies RenderedOutput;
 }
 

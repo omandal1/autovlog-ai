@@ -201,8 +201,14 @@ export async function preprocessAsset(asset: MediaAsset) {
   const paths = getProjectPaths(asset.projectId);
 
   if (asset.mediaType === "image") {
-    const normalizedPath = path.join(paths.normalizedDir, `${asset.id}.jpg`);
-    const thumbnailPath = path.join(paths.thumbnailsDir, `${asset.id}.jpg`);
+    const normalizedPath =
+      asset.storage.normalizedPath ?? path.join(paths.normalizedDir, `${asset.id}.jpg`);
+    const thumbnailPath =
+      asset.storage.thumbnailPath || path.join(paths.thumbnailsDir, `${asset.id}.jpg`);
+    await Promise.all([
+      mkdir(path.dirname(normalizedPath), { recursive: true }),
+      mkdir(path.dirname(thumbnailPath), { recursive: true })
+    ]);
     let usedFallback = false;
     let fallbackError: unknown;
 
@@ -257,10 +263,15 @@ export async function preprocessAsset(asset: MediaAsset) {
     };
   }
 
-  const thumbnailPath = path.join(paths.thumbnailsDir, `${asset.id}.jpg`);
-  const proxyPath = path.join(paths.proxiesDir, `${asset.id}.mp4`);
-  const keyframeDir = path.join(paths.keyframesDir, asset.id);
-  await mkdir(keyframeDir, { recursive: true });
+  const thumbnailPath =
+    asset.storage.thumbnailPath || path.join(paths.thumbnailsDir, `${asset.id}.jpg`);
+  const proxyPath = asset.storage.proxyPath ?? path.join(paths.proxiesDir, `${asset.id}.mp4`);
+  const keyframeDir = asset.storage.keyframeDir ?? path.join(paths.keyframesDir, asset.id);
+  await Promise.all([
+    mkdir(path.dirname(thumbnailPath), { recursive: true }),
+    mkdir(path.dirname(proxyPath), { recursive: true }),
+    mkdir(keyframeDir, { recursive: true })
+  ]);
   const durationSec = asset.metadata.durationSec ?? 2;
   const thumbnailSeekSec =
     durationSec <= 0.35
