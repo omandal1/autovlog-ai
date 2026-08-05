@@ -1,0 +1,47 @@
+{
+  "id": "chapter_demo",
+  "projectId": "proj_demo001",
+  "kind": "chapter",
+  "title": "Social Life",
+  "targetDurationSec": 60,
+  "actualDurationSec": 60,
+  "settings": {
+    "tone": "energetic",
+    "clipDensity": "fast-cuts",
+    "musicStyle": "lofi"
+  },
+  "chapterOrder": [
+    "chapter_social"
+  ],
+  "renderProfile": {
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "transitionSec": 0.2
+  },
+  "clips": [
+    {
+      "id": "clip_101",
+      "assetId": "asset_j",
+      "chapterId": "chapter_social",
+      "mediaType": "video",
+      "sourcePath": "/storage/projects/proj_demo001/proxies/asset_j.mp4",
+      "trimStartSec": 0.8,
+      "trimDurationSec": 3.4,
+      "displayDurationSec": 3.4,
+      "score": 0.88,
+      "titleOverlay": "Social Life"
+    },
+    {
+      "id": "clip_102",
+      "assetId": "asset_k",
+      "chapterId": "chapter_social",
+      "mediaType": "image",
+      "sourcePath": "/storage/projects/proj_demo001/normalized/asset_k.jpg",
+      "trimStartSec": 0,
+      "trimDurationSec": 2.2,
+      "displayDurationSec": 2.2,
+      "score": 0.76
+    }
+  ]
+}

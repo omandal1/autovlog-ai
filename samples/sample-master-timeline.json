@@ -1,0 +1,49 @@
+{
+  "id": "master_demo",
+  "projectId": "proj_demo001",
+  "kind": "master",
+  "title": "College Vlog Recap",
+  "targetDurationSec": 300,
+  "actualDurationSec": 298.4,
+  "settings": {
+    "tone": "balanced",
+    "clipDensity": "fast-cuts",
+    "musicStyle": "cinematic"
+  },
+  "chapterOrder": [
+    "chapter_move_in",
+    "chapter_classes",
+    "chapter_social"
+  ],
+  "renderProfile": {
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "transitionSec": 0.32
+  },
+  "clips": [
+    {
+      "id": "clip_001",
+      "assetId": "asset_a",
+      "chapterId": "chapter_move_in",
+      "mediaType": "video",
+      "sourcePath": "/storage/projects/proj_demo001/proxies/asset_a.mp4",
+      "trimStartSec": 1.2,
+      "trimDurationSec": 4.6,
+      "displayDurationSec": 4.6,
+      "score": 0.84,
+      "titleOverlay": "Move-In"
+    },
+    {
+      "id": "clip_002",
+      "assetId": "asset_b",
+      "chapterId": "chapter_move_in",
+      "mediaType": "image",
+      "sourcePath": "/storage/projects/proj_demo001/normalized/asset_b.jpg",
+      "trimStartSec": 0,
+      "trimDurationSec": 2.8,
+      "displayDurationSec": 2.8,
+      "score": 0.77
+    }
+  ]
+}

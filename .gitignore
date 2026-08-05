@@ -1,0 +1,16 @@
+.next
+node_modules
+.npm-cache
+.run-logs
+storage/projects
+storage/accounts
+dist
+*.log
+__pycache__
+.pytest_cache
+*.pyc
+.venv
+*.tsbuildinfo
+.env
+.env.local
+.env.*.local
