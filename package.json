@@ -12,7 +12,7 @@
     "backend": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json server/start.ts",
     "build": "next build",
     "start": "next start",
-    "check": "tsc --noEmit",
+    "check": "next typegen && tsc --noEmit",
     "test": "npm run test:api && npm run validate:diary && npm run validate:wall-frame",
     "test:api": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json server/__tests__/app.test.ts",
     "validate:diary": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/validate-diary-text.ts",
