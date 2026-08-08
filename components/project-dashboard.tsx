@@ -516,7 +516,7 @@ export function ProjectDashboard({ initialProject }: ProjectDashboardProps) {
             {project.outputs.map((output) => (
               <article key={output.id} className="rounded-[1.75rem] border border-white/10 bg-white/5 p-4">
                 <div className="flex items-start justify-between gap-4">
-                  <div><h3 className="text-lg font-medium text-white">{output.title}</h3><p className="mt-1 text-sm text-slate-400">{output.kind} output â€¢ {formatSeconds(output.durationSec)}</p></div>
+                  <div><h3 className="text-lg font-medium text-white">{output.title}</h3><p className="mt-1 text-sm text-slate-400">{output.kind} output · {formatSeconds(output.durationSec)}</p></div>
                   <a href={output.downloadRoute} className="rounded-full border border-orange-300/30 px-4 py-2 text-sm text-orange-100 hover:bg-orange-300/10">Download MP4</a>
                 </div>
                 <video controls preload="metadata" className="mt-4 max-h-[32rem] w-full rounded-2xl border border-white/10 bg-black object-contain" src={output.downloadRoute} />
@@ -540,7 +540,7 @@ export function ProjectDashboard({ initialProject }: ProjectDashboardProps) {
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <div className="truncate text-sm font-medium text-white">{asset.filename}</div>
-                    <div className="mt-1 text-xs text-slate-400">{asset.analysis?.qualityTier ?? "usable"} â€¢ score {Math.round((asset.score?.total ?? 0) * 100)}</div>
+                    <div className="mt-1 text-xs text-slate-400">{asset.analysis?.qualityTier ?? "usable"} · score {Math.round((asset.score?.total ?? 0) * 100)}</div>
                   </div>
                   <div className="flex gap-2">
                     <button type="button" onClick={() => handleMediaState(asset.id, { pinned: !asset.userState?.pinned, excluded: false })} disabled={busyAction === `asset:${asset.id}`} className={cn("rounded-full px-3 py-1 text-xs", asset.userState?.pinned ? "bg-orange-300/15 text-orange-100" : "bg-white/5 text-slate-300")}>{asset.userState?.pinned ? "Pinned" : "Pin"}</button>

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Cormorant_Garamond, Space_Grotesk } from "next/font/google";
 
+import { AuthProvider } from "@/components/auth-provider";
 import { APP_NAME } from "@/lib/constants";
 import "@/app/globals.css";
 
@@ -17,9 +18,9 @@ const bodyFont = Space_Grotesk({
 });
 
 export const metadata: Metadata = {
-  title: APP_NAME,
+  title: `${APP_NAME} · Your private memory studio`,
   description:
-    "Bulk-upload campus media, automatically chapter it, and render a cinematic college vlog recap."
+    "Create private diary-style films and cinematic wall-frame memory montages from your own photos, videos, and MP3 soundtracks."
 };
 
 export default function RootLayout({
@@ -30,7 +31,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${headingFont.variable} ${bodyFont.variable} font-sans`}>
-        {children}
+        <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
   );

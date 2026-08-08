@@ -1,9 +1,12 @@
 .next
+next-env.d.ts
 node_modules
 .npm-cache
 .run-logs
 storage/projects
 storage/accounts
+storage/users
+storage/.incoming
 dist
 *.log
 __pycache__
@@ -14,3 +17,4 @@ __pycache__
 .env
 .env.local
 .env.*.local
+.secrets/

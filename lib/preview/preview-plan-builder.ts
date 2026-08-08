@@ -119,7 +119,7 @@ export function buildPreviewPlan(options: {
     themePreset,
     titleStyle,
     decorationLevel,
-    generationMode: "memory-book",
+    generationMode: generation.generationMode,
     aspectRatio: "landscape-16x9",
     musicVibe: masterVibe,
     estimatedDurationSec: masterTimeline.actualDurationSec,
