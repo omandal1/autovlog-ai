@@ -133,6 +133,34 @@ export async function analyzeMp3File(filePath: string, filename: string): Promis
   };
 }
 
+export async function analyzeMp3FileWithFallback(
+  filePath: string,
+  filename: string
+): Promise<SoundtrackAnalysis> {
+  try {
+    return await analyzeMp3File(filePath, filename);
+  } catch (analysisError) {
+    try {
+      const probe = await probeFile(filePath);
+      const durationSec = Number(probe.format?.duration ?? "0") || 0;
+      if (durationSec < SOUNDTRACK_UPLOAD_POLICY.minimumUsableDurationSec) {
+        throw analysisError;
+      }
+      const edgeTrimSec = Number(clamp(durationSec * 0.02, 0, 3).toFixed(3));
+      return {
+        durationSec,
+        energyScore: 0.52,
+        stableStartSec: edgeTrimSec,
+        stableEndSec: Number(Math.max(edgeTrimSec + 3, durationSec - edgeTrimSec).toFixed(3)),
+        confidence: 0.22,
+        source: "fallback"
+      };
+    } catch {
+      throw analysisError;
+    }
+  }
+}
+
 export function soundtrackDuration(track: UploadedSoundtrack) {
   return track.analysis?.durationSec ?? 0;
 }

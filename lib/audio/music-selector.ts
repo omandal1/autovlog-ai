@@ -177,7 +177,7 @@ function orderedUploadedSoundtracks(timeline: Timeline) {
       if (leftOrder !== rightOrder) {
         return leftOrder - rightOrder;
       }
-      return (right.analysis?.energyScore ?? 0.5) - (left.analysis?.energyScore ?? 0.5);
+      return 0; // Preserve upload order when no explicit playlist order exists.
     });
 }
 
@@ -202,13 +202,9 @@ function vibeFromUploadedTracks(timeline: Timeline, tracks: UploadedSoundtrack[]
 function buildUploadedTrackSchedule(timeline: Timeline, tracks: UploadedSoundtrack[], vibe: VlogVibe) {
   const audioTracks: TimelineAudioTrack[] = [];
   const soundtrackSegments: SoundtrackPlan["segments"] = [];
-  const crossfadeSec = 1.15;
+  const crossfadeSec = 0.025;
   const baseVolumeDb = -8.8;
   const totalDurationSec = Math.max(0, timeline.actualDurationSec);
-  const maxAdvancePerSegmentSec =
-    tracks.length > 1
-      ? clamp(totalDurationSec / tracks.length, 4.5, 72)
-      : totalDurationSec;
   let playheadSec = 0;
   let segmentIndex = 0;
 
@@ -217,29 +213,17 @@ function buildUploadedTrackSchedule(timeline: Timeline, tracks: UploadedSoundtra
       break;
     }
     const track = tracks[segmentIndex % tracks.length]!;
-    const durationSec = track.analysis?.durationSec ?? 0;
-    const stableStartSec = track.analysis?.stableStartSec ?? 0;
-    const stableEndSec = track.analysis?.stableEndSec ?? Math.max(durationSec, 8);
-    const usableDurationSec = Math.max(3, stableEndSec - stableStartSec);
-    const leadOverlapSec = segmentIndex === 0 ? 0 : crossfadeSec;
+    const sourceDurationSec = track.analysis?.durationSec;
+    if (!Number.isFinite(sourceDurationSec) || sourceDurationSec! <= 0) {
+      throw new Error(`Uploaded soundtrack ${track.filename} has no validated duration.`);
+    }
+    const leadOverlapSec = segmentIndex === 0 ? 0 : Math.min(crossfadeSec, sourceDurationSec! / 4);
     const segmentStartSec = Math.max(0, playheadSec - leadOverlapSec);
     const remainingSec = totalDurationSec - playheadSec;
-    const desiredAdvanceSec =
-      tracks.length > 1
-        ? Math.min(maxAdvancePerSegmentSec, remainingSec)
-        : remainingSec;
-    const targetRawDurationSec = Math.min(usableDurationSec, desiredAdvanceSec + leadOverlapSec);
-    const sourceRoomSec = Math.max(0, usableDurationSec - targetRawDurationSec);
-    const sourceOffsetSec =
-      stableStartSec +
-      (sourceRoomSec > 1
-        ? (hashSeed(`${timeline.id}:${track.id}:${segmentIndex}`) % Math.floor(sourceRoomSec))
-        : 0);
-    const sourceAvailableSec = Math.max(0.25, usableDurationSec - (sourceOffsetSec - stableStartSec));
-    const rawDurationSec = Math.max(
-      0.25,
-      Math.min(sourceAvailableSec, targetRawDurationSec)
-    );
+    // Uploaded songs are treated as a continuous user-curated playlist. Always
+    // begin at the start of a track, play it through, and only loop after its
+    // complete duration has been consumed. This avoids random mid-song cuts.
+    const rawDurationSec = Math.min(sourceDurationSec!, remainingSec + leadOverlapSec);
     const segmentId = createId("music", 8);
     const audioTrack: TimelineAudioTrack = {
       id: segmentId,
@@ -248,7 +232,7 @@ function buildUploadedTrackSchedule(timeline: Timeline, tracks: UploadedSoundtra
       category: vibe,
       sourcePath: track.path,
       startSec: Number(segmentStartSec.toFixed(3)),
-      sourceOffsetSec: Number(sourceOffsetSec.toFixed(3)),
+      sourceOffsetSec: 0,
       durationSec: Number(rawDurationSec.toFixed(3)),
       crossfadeSec: Number(leadOverlapSec.toFixed(3)),
       volumeDb: Number((baseVolumeDb + (track.analysis?.energyScore ?? 0.5) * 1.6).toFixed(2))
@@ -275,13 +259,11 @@ function buildUploadedTrackSchedule(timeline: Timeline, tracks: UploadedSoundtra
     audioTracks,
     soundtrackPlan: {
       sourcePolicy: "user-uploaded-audio",
-      strategy: timeline.settings.musicSelection?.soundtrackStrategy ?? "auto-select-best-segments",
+      strategy: "track-order",
       uploadedTrackIds: tracks.map((track) => track.id),
       segments: soundtrackSegments,
       usesInternalFallback: false,
-      analysisNotes: tracks.map((track) =>
-        `${track.filename}: ${Math.round((track.analysis?.energyScore ?? 0.5) * 100)} energy`
-      )
+      analysisNotes: ["Continuous full-song playback in playlist order; loop from the beginning when needed."]
     } satisfies SoundtrackPlan
   };
 }

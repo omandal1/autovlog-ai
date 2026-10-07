@@ -16,6 +16,7 @@ import type {
 } from "@/lib/types";
 import { average } from "@/lib/utils";
 import { normalizeProjectSettings } from "@/lib/user-controls/generation-settings";
+import { planEditorialSequence } from "@/lib/editorial/editorial-planner";
 
 function scoreAssetImportance(asset: MediaAsset, project: ProjectRecord, chapter?: Chapter) {
   const settings = normalizeProjectSettings(project.settings);
@@ -104,29 +105,7 @@ function orderAssetsForChapter(
   if (ordering === "strict-chronological") {
     return chronological;
   }
-
-  const weighted = [...chronological].sort((left, right) => {
-    const rightScore = scoreAssetImportance(right, project, chapter);
-    const leftScore = scoreAssetImportance(left, project, chapter);
-    const timeBias =
-      ordering === "mostly-chronological"
-        ? chronological.indexOf(left) - chronological.indexOf(right)
-        : 0;
-    return rightScore - leftScore + timeBias * 0.03;
-  });
-
-  if (ordering === "best-story-order") {
-    const opening = weighted[0];
-    const ending = [...weighted]
-      .reverse()
-      .find((asset) => asset.id !== opening?.id);
-    const middle = chronological.filter(
-      (asset) => asset.id !== opening?.id && asset.id !== ending?.id
-    );
-    return [opening, ...middle, ending].filter((asset): asset is MediaAsset => Boolean(asset));
-  }
-
-  return chronological.map((asset, index) => weighted[index] ?? asset);
+  return planEditorialSequence(chronological);
 }
 
 function buildPacingProfile(project: ProjectRecord): PacingProfile {
@@ -197,7 +176,13 @@ export function createStoryPlan(project: ProjectRecord) {
     );
     const openingAsset = orderedAssets[0];
     const endingAsset = orderedAssets[orderedAssets.length - 1];
-    const representativeAssets = (strongAssets.length ? strongAssets : orderedAssets).slice(0, 4);
+    const representativeAssets = [...(strongAssets.length ? strongAssets : orderedAssets)]
+      .sort(
+        (left, right) =>
+          (right.analysis?.editorial?.storyImportanceScore ?? scoreAssetImportance(right, project, chapter)) -
+          (left.analysis?.editorial?.storyImportanceScore ?? scoreAssetImportance(left, project, chapter))
+      )
+      .slice(0, 4);
     const reasons: SelectionReason[] = [];
     if (openingAsset?.userState?.pinned) {
       reasons.push({
@@ -243,8 +228,32 @@ export function createStoryPlan(project: ProjectRecord) {
   }), "Chapter");
 
   const selectedAssetIds = new Set(chapterPlans.flatMap((plan) => plan.orderedAssetIds));
+  const hookPool = includedAssets.filter(
+    (asset, index) =>
+      !asset.analysis?.duplicateAnalysis?.isDuplicate &&
+      (includedAssets.length < 5 || index >= Math.floor(includedAssets.length * 0.12))
+  );
+  const openingAssetId = [...(hookPool.length ? hookPool : includedAssets)]
+    .sort(
+      (left, right) =>
+        (right.analysis?.editorial?.hookScore ?? scoreAssetImportance(right, project)) -
+        (left.analysis?.editorial?.hookScore ?? scoreAssetImportance(left, project))
+    )[0]?.id ?? project.assets.find((asset) => asset.userState?.pinned)?.id;
+  const endingAssetId =
+    chapterPlans[chapterPlans.length - 1]?.endingAssetId ??
+    [...includedAssets].reverse().find((asset) => !asset.analysis?.duplicateAnalysis?.isDuplicate)?.id;
+
   for (const asset of includedAssets) {
-    const reasons = asset.analysis?.selectionReasons ?? [];
+    const editorial = asset.analysis?.editorial;
+    const reasons = [...(asset.analysis?.selectionReasons ?? [])];
+    if (editorial?.hookScore && asset.id === openingAssetId) {
+      reasons.push({
+        kind: "opening-candidate",
+        label: "Editorial hook",
+        detail: "Selected from across the scene for emotion, novelty, motion, audio energy, and context independence.",
+        weight: editorial.hookScore
+      });
+    }
     reasonsByAssetId[asset.id] = reasons;
   }
 
@@ -259,13 +268,6 @@ export function createStoryPlan(project: ProjectRecord) {
       ];
     }
   }
-
-  const openingAssetId =
-    chapterPlans[0]?.openingAssetId ??
-    project.assets.find((asset) => asset.userState?.pinned)?.id;
-  const endingAssetId =
-    chapterPlans[chapterPlans.length - 1]?.endingAssetId ??
-    [...includedAssets].reverse().find((asset) => !asset.analysis?.duplicateAnalysis?.isDuplicate)?.id;
 
   const highlights: HighlightMoment[] = chapterPlans.flatMap((plan) =>
     plan.highlightAssetIds.map((assetId, index) => ({
@@ -322,6 +324,7 @@ export function createStoryPlan(project: ProjectRecord) {
       .map((asset) => asset.id)
       .filter((assetId) => !selectedAssetIds.has(assetId)),
     reasonsByAssetId,
-    skipReasonsByAssetId
+    skipReasonsByAssetId,
+    narrativeSummary: `A hook-led ${chapterPlans.length}-chapter memory story that moves from context through progression to an intentional payoff.`
   } satisfies StoryPlan;
 }

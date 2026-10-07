@@ -1,6 +1,7 @@
 import type { Timeline, TimelineClip } from "@/lib/types";
 
 import { probeFile, runFfmpeg } from "@/scripts/ffmpeg";
+import { runWithConcurrency } from "@/lib/utils";
 
 function parseVolumeMetric(stderr: string, metric: "mean_volume" | "max_volume") {
   const match = stderr.match(new RegExp(`${metric}:\\s*(-?[\\d.]+)\\s*dB`, "i"));
@@ -108,19 +109,16 @@ async function analyzeClipAudio(clip: TimelineClip) {
 
 export async function analyzeTimelineSourceAudio(timeline: Timeline) {
   const cache = new Map<string, Awaited<ReturnType<typeof analyzeClipAudio>>>();
-  const clips: TimelineClip[] = [];
-
-  for (const clip of timeline.clips) {
+  const clips = await runWithConcurrency(timeline.clips, 3, async (clip) => {
     if (clip.mediaType !== "video" || !clip.audioSourcePath) {
-      clips.push({
+      return {
         ...clip,
         sourceAudio: {
           hasAudio: false,
           gainDb: 0,
           musicDuckDb: 0
         }
-      });
-      continue;
+      } satisfies TimelineClip;
     }
 
     const cacheKey = `${clip.audioSourcePath}:${clip.trimStartSec.toFixed(3)}:${clip.trimDurationSec.toFixed(3)}`;
@@ -128,11 +126,11 @@ export async function analyzeTimelineSourceAudio(timeline: Timeline) {
       cache.set(cacheKey, await analyzeClipAudio(clip));
     }
 
-    clips.push({
+    return {
       ...clip,
       sourceAudio: cache.get(cacheKey)!
-    });
-  }
+    } satisfies TimelineClip;
+  });
 
   return {
     ...timeline,
