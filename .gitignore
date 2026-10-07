@@ -3,10 +3,15 @@ next-env.d.ts
 node_modules
 .npm-cache
 .run-logs
+.tmp-codex/
 storage/projects
 storage/accounts
 storage/users
 storage/.incoming
+storage/.render-temp
+storage/.runtime
+storage/.test-temp
+storage/.recovery-tests
 dist
 *.log
 __pycache__

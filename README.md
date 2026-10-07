@@ -5,7 +5,7 @@ AutoVlog AI turns a user's photos, videos, and optional MP3 files into durable p
 The supported products are:
 
 - **Diary / Notebook Memory Book** — the existing physical-book presentation, diary text, page turns, uploaded soundtrack mixing, one master, and chapter mini-vlogs.
-- **Wall Frame Memories** — an original gallery-wall montage with balanced frame clusters, photo/video frames, stable camera glides, parallax, captions, uploaded soundtrack mixing, and focused source-video audio. It produces one Wall Frame master.
+- **Wall Frame Memories** — an original gallery tour with rotating hero memories, varied frame openings/materials, camera glides, push-ins, captions, and focused source-video audio. It produces a 2–5 minute Wall Frame Master plus 30–90 second memory-cluster videos.
 
 Apple Music, Modern Vlog, social-trend scraping, and TikTok/Instagram modes are not part of this product.
 
@@ -173,13 +173,22 @@ Path segments are validated, client paths are ignored, stored paths are checked 
 - Multiple uploaded MP3s are analyzed for duration, loudness, silence edges, energy, and estimated tempo.
 - If detailed MP3 analysis fails but FFprobe confirms valid usable audio, a conservative duration/volume plan is used.
 - When any MP3s are selected, only those MP3s provide background music. Source-video audio can still be mixed and ducks the music.
+- Uploaded songs play continuously from their beginnings in playlist order. Songs are not chopped at scene/page boundaries; the playlist loops when needed, with a brief boundary blend to avoid clicks. Chapter soundtrack balancing selects a song for each mini-vlog, which also plays from its beginning and loops as needed.
 - Without an uploaded MP3, the local royalty-free library supplies fallback music.
 
 ## Render jobs and outputs
 
 Starting a render creates a MongoDB `RenderJob`. Progress, current stage, errors, settings snapshots, and plan paths persist. Successful files are validated before `RenderOutput` records are created.
 
-Diary mode renders the master and chapter timelines. Wall Frame mode renders one main `wall-frame` output and uses its own deterministic layout validation, repair, and simpler Wall Frame fallback; it does not silently switch to Diary mode.
+The shared professional editorial planner runs before either renderer. It derives a structured `EditorialAnalysis` for each usable asset, selects candidate source ranges, suppresses redundant takes, chooses a hook from across the footage, restores contextual chronology after the hook, varies shot scale/visual palette, and records selection reasons. Every timeline stores an `EditDecisionList` containing scene and clip decisions, source trims, pacing, audio overlap decisions, and explainability data. Diary and Wall Frame therefore interpret the same story decisions in different visual languages.
+
+Render stages are reported from real work (`VALIDATING_MEDIA`, `ANALYZING_MEDIA`, `PLANNING_STORY`, `PREPARING_MEDIA`, `BUILDING_VISUALS`, `RENDERING_SEGMENTS`, `MIXING_AUDIO`, `FINAL_ENCODING`, and `VALIDATING_OUTPUT`). A per-job timing file is written under the project `metadata` directory. Final registration performs an independent FFprobe check for a playable H.264/yuv420p video with AAC-compatible audio.
+
+Unchanged normalized images, thumbnails, video proxies, and sampled keyframes are reused. Metadata and image scoring use bounded worker pools, video normalization is limited to three concurrent jobs, and one corrupt source asset is recorded and skipped without discarding an otherwise usable project.
+
+Diary mode renders the master and chapter timelines. Wall Frame mode renders a `wall-frame-master` plus `wall-frame-cluster` outputs from the editorial chapters. Saved outputs remain visible when the generation mode changes.
+
+The Wall Frame coverage planner first chooses a duration-appropriate set of memories, then assigns every selected memory a hero slot. Each section normally features two heroes, foreshadows upcoming heroes in supporting frames, and promotes those memories in following sections. Plans record `selectedMasterMedia`, explicit duration exclusions, per-memory hero/support counts, and coverage metrics. Validation rejects uncovered selected memories or hero domination. The low/medium/high Frame Variety control affects the actual materials and masked openings. Intermediate layouts and masks are deterministic throughout camera motion.
 
 Output preview/download links are short-lived signed tickets issued only after an authenticated ownership check. Tickets default to a 15-minute lifetime (`FILE_TICKET_TTL_SECONDS=900`) and are capped at one hour. The ticket endpoint rechecks the output record and preserves byte-range streaming, so the browser does not have to buffer an entire large render.
 
@@ -216,11 +225,17 @@ npm test
 npm run build
 ```
 
-`npm test` runs API ownership/upload/range tests and deterministic Wall Frame planning/repair validation. An optional real FFmpeg Wall Frame smoke pass can be run with:
+`npm test` runs API ownership/upload/range tests, Diary and Wall Frame validation, 36/100/300-item editorial planning scenarios, corrupt-source handling, and normalized-proxy cache validation. All runtime and test scratch directories stay under this D-drive project storage root. An optional real FFmpeg Wall Frame smoke pass can be run with:
 
 ```powershell
 $env:WALL_FRAME_RENDER_SMOKE='1'
 npm run validate:wall-frame
+```
+
+The continuous-music regression test renders actual encoded audio and a Wall Frame MP4, then checks the order of known audio passages through multiple loops:
+
+```powershell
+npx ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/validate-continuous-music.ts
 ```
 
 ## Wall Frame originality note

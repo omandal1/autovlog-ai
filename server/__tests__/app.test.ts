@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, test } from "node:test";
 
@@ -36,6 +35,7 @@ import type {
   SoundtrackAssetPatch
 } from "../repository";
 import { LocalStorageProvider } from "../storage/local-storage-provider";
+import { runFfmpeg } from "@/scripts/ffmpeg";
 
 class MemoryRepository implements AutoVlogRepository {
   users: UserRecord[] = [];
@@ -238,10 +238,39 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
+test("keeps render scratch paths shallow and cleans only the requested job", async () => {
+  const testTempRoot = path.join(process.cwd(), "storage", ".test-temp");
+  await mkdir(testTempRoot, { recursive: true });
+  const root = await mkdtemp(path.join(testTempRoot, "autovlog-storage-test-"));
+  roots.push(root);
+  const storage = new LocalStorageProvider(root);
+  await storage.initialize();
+
+  const first = await storage.getRenderTempRoot(
+    `user-${"a".repeat(96)}`,
+    `project-${"b".repeat(92)}`,
+    "job-first"
+  );
+  const second = await storage.getRenderTempRoot("another-user", "another-project", "job-second");
+
+  assert.equal(path.dirname(first), path.join(root, ".render-temp"));
+  assert.equal(path.dirname(second), path.join(root, ".render-temp"));
+  assert.notEqual(first, second);
+
+  await writeFile(path.join(first, "first.tmp"), "first", "utf8");
+  await writeFile(path.join(second, "second.tmp"), "second", "utf8");
+  await storage.cleanupTemp("unrelated-user", "unrelated-project", "job-first");
+
+  await assert.rejects(readdir(first));
+  assert.deepEqual(await readdir(second), ["second.tmp"]);
+});
+
 async function fixture(
   options: { now?: () => number; pipelineAdapter?: ProjectPipelineAdapter } = {}
 ) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "autovlog-api-test-"));
+  const testTempRoot = path.join(process.cwd(), "storage", ".test-temp");
+  await mkdir(testTempRoot, { recursive: true });
+  const root = await mkdtemp(path.join(testTempRoot, "autovlog-api-test-"));
   roots.push(root);
   const repository = new MemoryRepository();
   const storage = new LocalStorageProvider(root);
@@ -272,7 +301,28 @@ async function fixture(
         type === "wall-frame" ? "wall-frame" : "master",
         "result.mp4"
       );
-      await writeFile(outputPath, Buffer.from("0123456789", "ascii"));
+      await runFfmpeg([
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=navy:s=320x180:r=30:d=1",
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=channel_layout=stereo:sample_rate=48000",
+        "-t",
+        "1",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-movflags",
+        "+faststart",
+        outputPath
+      ]);
       await runtime.registerOutput({ type, title: "Rendered memory", localPath: outputPath });
     }
   });
@@ -500,7 +550,23 @@ describe("AutoVlog local API", () => {
     const created = await request(app)
       .post("/api/projects")
       .set(auth("alice"))
-      .send({ title: "Wall memories", generationMode: "wall-frame" });
+      .send({
+        title: "Wall memories",
+        generationMode: "wall-frame",
+        settings: {
+          wallFrameStyleSettings: {
+            frameStyle: "mixed-scrapbook",
+            wallStyle: "dorm-room-wall",
+            cameraMotion: "energetic",
+            transitionEnergy: "high",
+            captionStyle: "memory-captions"
+          }
+        }
+      });
+    assert.equal(
+      created.body.project.settings.wallFrameStyleSettings.transitionEnergy,
+      "high"
+    );
     const projectId = created.body.project.id as string;
 
     const uploadedMedia = await request(app)
@@ -566,16 +632,16 @@ describe("AutoVlog local API", () => {
 
     const ranged = await request(app).get(ticketUrl).set("Range", "bytes=2-5");
     assert.equal(ranged.status, 206);
-    assert.equal(ranged.headers["content-range"], "bytes 2-5/10");
+    assert.equal(ranged.headers["content-range"], `bytes 2-5/${repository.outputs[0]!.size}`);
     assert.equal(
       ranged.headers["content-disposition"],
       "inline; filename=\"M_moires _t_.mp4\"; filename*=UTF-8''M%C3%A9moires%20%C3%A9t%C3%A9.mp4"
     );
-    assert.deepEqual(ranged.body, Buffer.from("2345", "ascii"));
+    assert.equal(ranged.body.length, 4);
 
     const head = await request(app).head(ticketUrl);
     assert.equal(head.status, 200);
-    assert.equal(head.headers["content-length"], "10");
+    assert.equal(head.headers["content-length"], String(repository.outputs[0]!.size));
     assert.equal(head.headers["cache-control"], "private, no-store");
 
     const attachmentTicket = await request(app)

@@ -1474,8 +1474,9 @@ async function assembleVideoPieces(
   height: number,
   fps: number
 ) {
+  const validatedDurations: number[] = [];
   for (const piece of pieces) {
-    await assertValidVideoFile(piece.path, {
+    const metadata = await assertValidVideoFile(piece.path, {
       ...buildVideoValidationOptions({
         label: `${piece.kind} piece ${path.basename(piece.path)}`,
         width,
@@ -1485,12 +1486,25 @@ async function assembleVideoPieces(
       }),
       decode: true
     });
+    validatedDurations.push(metadata.durationSec);
   }
 
   const listFile = `${pieces
     .map((piece) => `file '${normalizeFfmpegPath(piece.path).replace(/'/g, "'\\''")}'`)
     .join("\n")}\n`;
   await writeFile(concatListPath, listFile, "utf8");
+
+  // Encoded piece durations are quantized to the output frame rate and can differ
+  // slightly from their ideal planner durations.  Validate the concat against the
+  // files that are actually being joined and allow at most one frame of rounding
+  // per boundary.  The old fixed 250 ms subtraction rejected healthy long Diary
+  // renders when many page/transition boundaries accumulated rounding error.
+  const boundaryRoundingSec = (pieces.length + 1) / Math.max(1, fps);
+  const minimumStitchedDurationSec = Math.max(
+    0.1,
+    validatedDurations.reduce((sum, durationSec) => sum + durationSec, 0) -
+      Math.max(0.25, boundaryRoundingSec)
+  );
 
   await writeAtomicVideo({
     outputPath,
@@ -1500,7 +1514,7 @@ async function assembleVideoPieces(
       width,
       height,
       fps,
-      minDurationSec: Math.max(0.1, pieces.reduce((sum, piece) => sum + piece.durationSec, 0) - 0.25)
+      minDurationSec: minimumStitchedDurationSec
     }),
     render: (temporaryOutputPath) =>
       runFfmpeg([
@@ -1601,13 +1615,15 @@ async function composeSourceAudioBed(
 
   const args = ["-y"];
   for (const clip of audioClips) {
+    const leadInSec = Math.max(0, clip.audioLeadInSec ?? 0);
+    const tailOutSec = Math.max(0, clip.audioTailOutSec ?? 0);
     const audioDurationSec = Math.max(
       0.1,
-      Math.min(clip.trimDurationSec, clip.displayDurationSec)
+      Math.min(clip.trimDurationSec, clip.displayDurationSec) + leadInSec + tailOutSec
     );
     args.push(
       "-ss",
-      clip.trimStartSec.toFixed(3),
+      Math.max(0, clip.trimStartSec - leadInSec).toFixed(3),
       "-t",
       audioDurationSec.toFixed(3),
       "-i",
@@ -1953,6 +1969,7 @@ export async function renderTimeline(
   }
   const pagePaths: string[] = [];
   const pageMetadata: VideoProbeSummary[] = [];
+  await destination.onProgress?.({ stage: "building-visuals", progress: 0.03, detail: "building diary pages" });
   for (let index = 0; index < timeline.book.pages.length; index += 1) {
     const page = timeline.book.pages[index]!;
     const pagePath = path.join(tempDir, `page-${String(index).padStart(3, "0")}.mp4`);
@@ -1979,8 +1996,14 @@ export async function renderTimeline(
         decode: true
       })
     );
+    await destination.onProgress?.({
+      stage: "rendering-segments",
+      progress: 0.05 + ((index + 1) / timeline.book.pages.length) * 0.5,
+      detail: `rendered diary page ${index + 1}/${timeline.book.pages.length}`
+    });
   }
 
+  await destination.onProgress?.({ stage: "rendering-segments", progress: 0.58, detail: "assembling validated video segments" });
   const stitchedVideoPath = await buildBookVideoAssembly(timeline, pagePaths, pageMetadata, tempDir);
   const musicBedPath = path.join(tempDir, "music-bed.m4a");
   const sourceBedPath = path.join(tempDir, "source-bed.m4a");
@@ -1988,6 +2011,7 @@ export async function renderTimeline(
 
   const clipStartTimes = calculateClipTimings(timeline);
   const requiresUploadedMusic = timeline.soundtrackPlan?.sourcePolicy === "user-uploaded-audio";
+  await destination.onProgress?.({ stage: "mixing-audio", progress: 0.76, detail: "mixing soundtrack and source audio" });
   const [musicPath, sourceAudioPath] = await Promise.all([
     composeMusicBed(timeline, musicBedPath).catch((error) => {
       if (requiresUploadedMusic) {
@@ -2006,6 +2030,7 @@ export async function renderTimeline(
     sourceAudioPath,
     outputPath: mixedAudioPath
   });
+  await destination.onProgress?.({ stage: "final-encoding", progress: 0.9, detail: "final encoding and mux" });
   await muxVideoWithAudio({
     stitchedVideoPath,
     mixedAudioPath,
@@ -2014,6 +2039,7 @@ export async function renderTimeline(
     height: timeline.renderProfile.height,
     fps: timeline.renderProfile.fps
   });
+  await destination.onProgress?.({ stage: "validating-output", progress: 0.98, detail: "validating final output" });
 
   return {
     id: timeline.id,

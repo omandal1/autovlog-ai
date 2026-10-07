@@ -1,4 +1,8 @@
-import { buildCameraPath, getSafeLayoutTemplate } from "@/lib/wall-frame/layout-planner";
+import {
+  buildCameraPath,
+  buildSectionMotionBeats,
+  getSafeLayoutTemplate
+} from "@/lib/wall-frame/layout-planner";
 import { getCameraMotionDefinition } from "@/lib/wall-frame/style-registry";
 import {
   calculateWallFrameDuration,
@@ -6,9 +10,11 @@ import {
 } from "@/lib/wall-frame/timing";
 import type {
   CameraKeyframe,
+  CameraTransform,
   MemoryFrame,
   NormalizedBounds,
   WallFrameRenderPlan,
+  WallFrameMediaCoverage,
   WallFrameRepairAction,
   WallFrameValidationIssue,
   WallFrameValidationReport,
@@ -18,6 +24,7 @@ import type {
 const SAFE_MARGIN = 0.018;
 const MIN_FRAME_SIZE = 0.08;
 const OVERLAP_TOLERANCE = 0.0012;
+const MAX_MEANINGFUL_MOTION_GAP_SEC = 6;
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
@@ -29,6 +36,78 @@ function finite(value: number) {
 
 function round(value: number, places = 4) {
   return Number(value.toFixed(places));
+}
+
+function refreshCoverage(plan: WallFrameRenderPlan): Pick<
+  WallFrameRenderPlan,
+  "mediaCoverage" | "coverageMetrics"
+> {
+  const previous = new Map(plan.mediaCoverage.map((item) => [item.mediaAssetId, item]));
+  const selectedIds = plan.selectedMasterMedia;
+  const coverage = new Map<string, WallFrameMediaCoverage>();
+  selectedIds.forEach((mediaAssetId) => {
+    const prior = previous.get(mediaAssetId);
+    coverage.set(mediaAssetId, {
+      mediaAssetId,
+      selectedForMaster: plan.outputRole === "master",
+      heroAppearanceCount: 0,
+      supportingAppearanceCount: 0,
+      hasBeenHero: false,
+      coveragePriority: prior?.coveragePriority ?? 0,
+      importanceScore: prior?.importanceScore ?? 0.5,
+      editorialScore: prior?.editorialScore ?? 0.5,
+      clusterId: prior?.clusterId
+    });
+  });
+
+  plan.wallSections.forEach((section, sectionIndex) => {
+    section.frames.forEach((frame) => {
+      const item = coverage.get(frame.mediaAssetId);
+      if (!item) return;
+      if (frame.role === "hero") {
+        item.heroAppearanceCount += 1;
+        item.hasBeenHero = true;
+        item.firstHeroSceneIndex ??= sectionIndex;
+        item.lastHeroSceneIndex = sectionIndex;
+      } else {
+        item.supportingAppearanceCount += 1;
+        item.lastSupportingSceneIndex = sectionIndex;
+      }
+    });
+  });
+
+  const mediaCoverage = [...coverage.values()];
+  const allFrames = plan.wallSections.flatMap((section) => section.frames);
+  const appearanceCounts = new Map<string, number>();
+  allFrames.forEach((frame) => {
+    appearanceCounts.set(frame.mediaAssetId, (appearanceCounts.get(frame.mediaAssetId) ?? 0) + 1);
+  });
+  const heroCounts = mediaCoverage.map((item) => item.heroAppearanceCount);
+  const heroCoveredMediaCount = mediaCoverage.filter((item) => item.hasBeenHero).length;
+  return {
+    mediaCoverage,
+    coverageMetrics: {
+      selectedMediaCount: selectedIds.length,
+      heroCoveredMediaCount,
+      heroCoverageRatio: selectedIds.length ? heroCoveredMediaCount / selectedIds.length : 0,
+      averageHeroAppearances: selectedIds.length
+        ? heroCounts.reduce((sum, count) => sum + count, 0) / selectedIds.length
+        : 0,
+      maxHeroAppearancesForSingleAsset: Math.max(0, ...heroCounts),
+      uniqueFrameStylesUsed: new Set(allFrames.map((frame) => frame.frameStyle)).size,
+      uniqueFrameShapesUsed: new Set(allFrames.map((frame) => frame.frameShape)).size,
+      wallSectionCount: plan.wallSections.length,
+      clusterVideoCount: plan.coverageMetrics.clusterVideoCount,
+      duplicateUsageCount: [...appearanceCounts.values()].reduce(
+        (sum, count) => sum + Math.max(0, count - 1),
+        0
+      ),
+      estimatedHeroCapacity: Math.max(
+        plan.coverageMetrics.estimatedHeroCapacity,
+        allFrames.filter((frame) => frame.role === "hero").length
+      )
+    }
+  };
 }
 
 function intersectionArea(a: NormalizedBounds, b: NormalizedBounds) {
@@ -72,16 +151,47 @@ function isCameraKeyframeValid(keyframe: CameraKeyframe) {
   );
 }
 
+function isCameraTransformValid(transform: CameraTransform) {
+  return (
+    finite(transform.x) &&
+    finite(transform.y) &&
+    finite(transform.scale) &&
+    finite(transform.rotation) &&
+    finite(transform.perspective) &&
+    finite(transform.blur) &&
+    finite(transform.depth) &&
+    transform.x >= 0 &&
+    transform.x <= 1 &&
+    transform.y >= 0 &&
+    transform.y <= 1 &&
+    transform.scale >= 0.85 &&
+    transform.scale <= 4 &&
+    Math.abs(transform.rotation) <= 12 &&
+    transform.perspective >= 0 &&
+    transform.perspective <= 1 &&
+    transform.blur >= 0 &&
+    transform.blur <= 1 &&
+    transform.depth >= 0 &&
+    transform.depth <= 1
+  );
+}
+
 function buildReport(plan: WallFrameRenderPlan): WallFrameValidationReport {
   const errors: WallFrameValidationIssue[] = [];
   const warnings: WallFrameValidationIssue[] = [];
   const seenAssets = new Set<string>();
+  const heroCounts = new Map<string, number>();
+  const appearanceCounts = new Map<string, number>();
+  const frameStyles = new Set<string>();
+  const frameShapes = new Set<string>();
+  const seenMotionTypes = new Set<string>();
 
   if (!plan.wallSections.length) {
     errors.push({ code: "no-sections", message: "The Wall Frame plan has no wall sections." });
   }
 
   for (const section of plan.wallSections) {
+    const sectionAssets = new Set<string>();
     if (!finite(section.durationSec) || section.durationSec <= 0.25) {
       errors.push({
         code: "invalid-duration",
@@ -106,6 +216,67 @@ function buildReport(plan: WallFrameRenderPlan): WallFrameValidationReport {
         sectionId: section.id
       });
     }
+    if (!section.frames.some((frame) => frame.role === "hero")) {
+      errors.push({
+        code: "missing-motion-pattern",
+        message: `Section ${section.id} has no hero memory frame.`,
+        sectionId: section.id
+      });
+    }
+    const frameIds = new Set(section.frames.map((frame) => frame.id));
+    const orderedBeats = [...(section.motionBeats ?? [])].sort(
+      (a, b) => a.startTimeSec - b.startTimeSec
+    );
+    for (const hero of section.frames.filter((frame) => frame.role === "hero")) {
+      if (!orderedBeats.some((beat) =>
+        beat.type === "hero-focus-hold" && beat.activeFrameIds.includes(hero.id) &&
+        beat.durationSec > 0 && beat.cameraTransformEnd.scale > 1.3
+      )) {
+        errors.push({
+          code: "incomplete-hero-coverage",
+          message: `Hero ${hero.id} has no actual camera focus moment.`,
+          sectionId: section.id,
+          frameId: hero.id
+        });
+      }
+    }
+    if (!orderedBeats.length) {
+      errors.push({
+        code: "invalid-motion-beat",
+        message: `Section ${section.id} has no planned motion beats.`,
+        sectionId: section.id
+      });
+    }
+    let previousEventTime = 0;
+    for (const beat of orderedBeats) {
+      seenMotionTypes.add(beat.type);
+      const beatEnd = beat.startTimeSec + beat.durationSec;
+      if (
+        !finite(beat.startTimeSec) ||
+        !finite(beat.durationSec) ||
+        beat.startTimeSec < 0 ||
+        beat.durationSec <= 0 ||
+        beatEnd > section.durationSec + 0.12 ||
+        !isCameraTransformValid(beat.cameraTransformStart) ||
+        !isCameraTransformValid(beat.cameraTransformEnd) ||
+        !beat.activeFrameIds.length ||
+        beat.activeFrameIds.some((id) => !frameIds.has(id))
+      ) {
+        errors.push({
+          code: "invalid-motion-beat",
+          message: `Motion beat ${beat.id} is invalid or targets a missing frame.`,
+          sectionId: section.id
+        });
+      }
+      if (beat.startTimeSec - previousEventTime > MAX_MEANINGFUL_MOTION_GAP_SEC) {
+        errors.push({
+          code: "motion-gap",
+          message: `Section ${section.id} waits more than six seconds between meaningful motion events.`,
+          sectionId: section.id
+        });
+      }
+      previousEventTime = beat.startTimeSec;
+    }
 
     for (let index = 0; index < section.frames.length; index += 1) {
       const frame = section.frames[index]!;
@@ -117,15 +288,22 @@ function buildReport(plan: WallFrameRenderPlan): WallFrameValidationReport {
           frameId: frame.id
         });
       }
-      if (seenAssets.has(frame.mediaAssetId)) {
+      if (sectionAssets.has(frame.mediaAssetId)) {
         errors.push({
           code: "duplicate-media",
-          message: `Media ${frame.mediaAssetId} is assigned more than once.`,
+          message: `Media ${frame.mediaAssetId} is assigned more than once in the same wall section.`,
           sectionId: section.id,
           frameId: frame.id
         });
       }
+      sectionAssets.add(frame.mediaAssetId);
       seenAssets.add(frame.mediaAssetId);
+      appearanceCounts.set(frame.mediaAssetId, (appearanceCounts.get(frame.mediaAssetId) ?? 0) + 1);
+      if (frame.role === "hero") {
+        heroCounts.set(frame.mediaAssetId, (heroCounts.get(frame.mediaAssetId) ?? 0) + 1);
+      }
+      frameStyles.add(frame.frameStyle);
+      frameShapes.add(frame.frameShape);
       if (!isBoundsValid(frame.bounds)) {
         errors.push({
           code: "out-of-bounds",
@@ -155,6 +333,59 @@ function buildReport(plan: WallFrameRenderPlan): WallFrameValidationReport {
         }
       }
     }
+  }
+
+  const selectedIds = new Set(plan.selectedMasterMedia ?? []);
+  const uncovered = [...selectedIds].filter((id) => (heroCounts.get(id) ?? 0) === 0);
+  const heroCoveredMediaCount = selectedIds.size - uncovered.length;
+  const heroCoverageRatio = selectedIds.size ? heroCoveredMediaCount / selectedIds.size : 0;
+  const estimatedCapacity = plan.coverageMetrics?.estimatedHeroCapacity ?? selectedIds.size;
+  if (uncovered.length && selectedIds.size <= estimatedCapacity) {
+    errors.push({
+      code: "incomplete-hero-coverage",
+      message: `${uncovered.length} selected memories never become hero frames even though the plan has sufficient hero capacity.`
+    });
+  } else if (selectedIds.size && heroCoverageRatio < 0.95) {
+    errors.push({
+      code: "incomplete-hero-coverage",
+      message: `Hero coverage ${(heroCoverageRatio * 100).toFixed(1)}% is below the required 95%.`
+    });
+  }
+  const maxHeroAppearancesForSingleAsset = Math.max(0, ...heroCounts.values());
+  if (uncovered.length && maxHeroAppearancesForSingleAsset > 1) {
+    errors.push({
+      code: "hero-domination",
+      message: "A memory repeats as hero while other selected memories have no hero coverage."
+    });
+  }
+
+  const requiredPatterns: Array<{ types: string[]; label: string }> = [
+    { types: ["wall-reveal"], label: "an opening wall reveal" },
+    { types: ["hero-push-in"], label: "a hero-frame push-in" },
+    { types: ["hero-focus-hold"], label: "a hero-frame focus moment" },
+    { types: ["snap-zoom-out", "cluster-reveal", "final-wall-reveal"], label: "a pull-back or cluster reveal" },
+    { types: ["frame-flip"], label: "a frame/card flip" },
+    { types: ["slide-panel", "whip-pan"], label: "a slide or whip-pan" },
+    { types: ["multi-frame-pass-by"], label: "a multi-frame pass-by" },
+    { types: ["final-wall-reveal"], label: "a final wall reveal" }
+  ];
+  for (const requirement of requiredPatterns) {
+    if (!requirement.types.some((type) => seenMotionTypes.has(type))) {
+      errors.push({
+        code: "missing-motion-pattern",
+        message: `The Wall Frame plan is missing ${requirement.label}.`
+      });
+    }
+  }
+  const flattenedBeatCount = plan.wallSections.reduce(
+    (sum, section) => sum + (section.motionBeats?.length ?? 0),
+    0
+  );
+  if (plan.motionBeats?.length !== flattenedBeatCount) {
+    errors.push({
+      code: "invalid-motion-beat",
+      message: "The plan-level motion beat index is out of sync with its wall sections."
+    });
   }
 
   for (const segment of plan.soundtrackPlan.segments) {
@@ -197,7 +428,19 @@ function buildReport(plan: WallFrameRenderPlan): WallFrameValidationReport {
       sectionCount: plan.wallSections.length,
       frameCount: plan.wallSections.reduce((sum, section) => sum + section.frames.length, 0),
       uniqueMediaCount: seenAssets.size,
-      durationSec
+      durationSec,
+      heroCoveredMediaCount,
+      heroCoverageRatio,
+      averageHeroAppearances: selectedIds.size
+        ? [...selectedIds].reduce((sum, id) => sum + (heroCounts.get(id) ?? 0), 0) / selectedIds.size
+        : 0,
+      maxHeroAppearancesForSingleAsset,
+      uniqueFrameStylesUsed: frameStyles.size,
+      uniqueFrameShapesUsed: frameShapes.size,
+      duplicateUsageCount: [...appearanceCounts.values()].reduce(
+        (sum, count) => sum + Math.max(0, count - 1),
+        0
+      )
     }
   };
 }
@@ -254,16 +497,17 @@ export function validateAndRepairWallFramePlan(plan: WallFrameRenderPlan) {
   }
 
   const repairs: WallFrameRepairAction[] = [];
-  const seenAssets = new Set<string>();
   const motion = getCameraMotionDefinition(plan.settings.cameraMotion);
   let sections = plan.wallSections
     .map((section) => {
+      const seenAssets = new Set<string>();
+      const heroCount = Math.max(1, section.frames.filter((frame) => frame.role === "hero").length);
       const sectionDurationSec =
         finite(section.durationSec) && section.durationSec > 0.25
           ? clamp(
               section.durationSec,
               motion.minSectionDurationSec,
-              motion.maxSectionDurationSec
+              Math.max(motion.maxSectionDurationSec * heroCount, 26)
             )
           : motion.sectionDurationSec;
       if (sectionDurationSec !== section.durationSec) {
@@ -295,7 +539,7 @@ export function validateAndRepairWallFramePlan(plan: WallFrameRenderPlan) {
           seenAssets.add(frame.mediaAssetId);
           return true;
         })
-        .slice(0, 5)
+        .slice(0, 8)
         .map((frame) => {
           const bounds = clampBounds(frame.bounds);
           if (JSON.stringify(bounds) !== JSON.stringify(frame.bounds)) {
@@ -307,6 +551,7 @@ export function validateAndRepairWallFramePlan(plan: WallFrameRenderPlan) {
           }
           return {
             ...frame,
+            frameShape: frame.frameShape ?? "landscape-rectangle",
             bounds,
             trimStartSec: Math.max(0, finite(frame.trimStartSec) ? frame.trimStartSec : 0),
             startTimeSec: 0,
@@ -362,7 +607,7 @@ export function validateAndRepairWallFramePlan(plan: WallFrameRenderPlan) {
     transitionToNext:
       index < sections.length - 1
         ? {
-            type: section.transitionToNext?.type ?? "fade",
+            type: section.transitionToNext?.type ?? (index % 2 === 0 ? "frame-flip-y" : "whip-left"),
             durationSec: clampTransitionDuration({
               requestedSec:
                 section.transitionToNext?.durationSec ?? motion.transitionDurationSec,
@@ -373,6 +618,26 @@ export function validateAndRepairWallFramePlan(plan: WallFrameRenderPlan) {
           }
         : undefined
   }));
+  sections = sections.map((section, index) => {
+    const motionBeats = buildSectionMotionBeats({
+      sectionId: section.id,
+      frames: section.frames,
+      durationSec: section.durationSec,
+      cameraPath: section.cameraPath,
+      transitionToNext: section.transitionToNext,
+      sectionIndex: index,
+      sectionCount: sections.length,
+      settings: plan.settings
+    });
+    if (JSON.stringify(motionBeats) !== JSON.stringify(section.motionBeats)) {
+      repairs.push({
+        type: "repair-motion-beats",
+        targetId: section.id,
+        detail: "Rebuilt the section's cinematic motion-beat sequence."
+      });
+    }
+    return { ...section, motionBeats };
+  });
   const durationSec = calculateWallFrameDuration(sections);
   const soundtrackSegments = plan.soundtrackPlan.segments
     .filter(
@@ -404,10 +669,11 @@ export function validateAndRepairWallFramePlan(plan: WallFrameRenderPlan) {
       };
     });
 
-  const repairedPlan: WallFrameRenderPlan = {
+  let repairedPlan: WallFrameRenderPlan = {
     ...plan,
     wallSections: sections,
     cameraMoves: sections.map((section) => section.cameraPath),
+    motionBeats: sections.flatMap((section) => section.motionBeats),
     soundtrackPlan: {
       ...plan.soundtrackPlan,
       segments: soundtrackSegments
@@ -416,6 +682,7 @@ export function validateAndRepairWallFramePlan(plan: WallFrameRenderPlan) {
     fallbackLevel: "repaired",
     validationReport: plan.validationReport
   };
+  repairedPlan = { ...repairedPlan, ...refreshCoverage(repairedPlan) };
   const report = buildReport(repairedPlan);
   report.repairs = repairs;
   return {
@@ -462,18 +729,36 @@ export function buildSimpleWallFrameFallback(plan: WallFrameRenderPlan) {
       backgroundStyle: plan.settings.wallStyle,
       durationSec,
       cameraPath: buildCameraPath(index, plan.settings, index * 97 + 11),
+      motionBeats: [],
       transitionToNext:
         index < sourceFrames.length - 1
-          ? { type: "fade", durationSec: Math.min(0.45, motion.transitionDurationSec) }
+          ? {
+              type: index % 2 === 0 ? "frame-flip-y" : "whip-left",
+              durationSec: Math.min(0.55, motion.transitionDurationSec)
+            }
           : undefined
     };
   });
-  const durationSec = calculateWallFrameDuration(sections);
-  const fallback: WallFrameRenderPlan = {
+  const animatedSections = sections.map((section, index) => ({
+    ...section,
+    motionBeats: buildSectionMotionBeats({
+      sectionId: section.id,
+      frames: section.frames,
+      durationSec: section.durationSec,
+      cameraPath: section.cameraPath,
+      transitionToNext: section.transitionToNext,
+      sectionIndex: index,
+      sectionCount: sections.length,
+      settings: plan.settings
+    })
+  }));
+  const durationSec = calculateWallFrameDuration(animatedSections);
+  let fallback: WallFrameRenderPlan = {
     ...plan,
     id: `${plan.id}_simple`,
-    wallSections: sections,
-    cameraMoves: sections.map((section) => section.cameraPath),
+    wallSections: animatedSections,
+    cameraMoves: animatedSections.map((section) => section.cameraPath),
+    motionBeats: animatedSections.flatMap((section) => section.motionBeats),
     durationSec,
     soundtrackPlan: {
       ...plan.soundtrackPlan,
@@ -487,6 +772,7 @@ export function buildSimpleWallFrameFallback(plan: WallFrameRenderPlan) {
     fallbackLevel: "simple",
     validationReport: plan.validationReport
   };
+  fallback = { ...fallback, ...refreshCoverage(fallback) };
   const report = buildReport(fallback);
   report.repairs = [
     ...plan.validationReport.repairs,

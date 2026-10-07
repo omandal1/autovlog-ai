@@ -17,6 +17,7 @@ import { ApiError, createApiClient, type ApiClient } from "@/lib/api/client";
 import type {
   CameraMotionDto,
   CaptionStyleDto,
+  FrameVarietyDto,
   CurrentUserDto,
   DiaryThemeDto,
   GenerationModeDto,
@@ -28,6 +29,7 @@ import type {
   RenderJobDto,
   RenderOutputDto,
   SoundtrackAssetDto,
+  TransitionEnergyDto,
   WallFrameStyleDto,
   WallStyleDto
 } from "@/lib/api/types";
@@ -41,12 +43,17 @@ const wallDefaults: Required<GenerationSettingsDto>["wallFrameStyleSettings"] = 
   frameStyle: "mixed-scrapbook",
   wallStyle: "dorm-room-wall",
   cameraMotion: "balanced",
-  captionStyle: "memory-captions"
+  transitionEnergy: "balanced",
+  captionStyle: "memory-captions",
+  frameVariety: "medium"
 };
 
 function settingsForMode(mode: GenerationModeDto, current?: GenerationSettingsDto): GenerationSettingsDto {
   if (mode === "wall-frame") {
-    return { ...current, wallFrameStyleSettings: current?.wallFrameStyleSettings || wallDefaults };
+    return {
+      ...current,
+      wallFrameStyleSettings: { ...wallDefaults, ...current?.wallFrameStyleSettings }
+    };
   }
   const diary = current?.diaryStyleSettings || diaryDefaults;
   return {
@@ -162,7 +169,7 @@ function ModeSelector({ value, onChange, disabled = false }: { value: Generation
       id: "wall-frame",
       eyebrow: "Cinematic & spatial",
       title: "Wall Frame Memories",
-      detail: "Glide across an original gallery wall, revealing photos and moving clips inside frames.",
+      detail: "Creates a moving wall-of-memories video with framed photos/videos, camera push-ins, frame flips, slides, whip-pans, pull-backs, and fast cut-and-go transitions.",
       accent: "border-sky-200/35 bg-sky-200/10"
     }
   ];
@@ -201,7 +208,7 @@ function SelectControl<T extends string>({ label, value, onChange, options }: { 
 
 function GenerationControls({ mode, settings, onChange }: { mode: GenerationModeDto; settings: GenerationSettingsDto; onChange: (settings: GenerationSettingsDto) => void }) {
   if (mode === "wall-frame") {
-    const wall = settings.wallFrameStyleSettings || wallDefaults;
+    const wall = { ...wallDefaults, ...settings.wallFrameStyleSettings };
     const update = (next: Partial<typeof wall>) => onChange({ ...settings, wallFrameStyleSettings: { ...wall, ...next } });
     return (
       <div className="grid gap-4 sm:grid-cols-2">
@@ -222,11 +229,21 @@ function GenerationControls({ mode, settings, onChange }: { mode: GenerationMode
           { value: "balanced", label: "Balanced" },
           { value: "energetic", label: "Energetic" }
         ]} />
+        <SelectControl<TransitionEnergyDto> label="Transition energy" value={wall.transitionEnergy} onChange={(value) => update({ transitionEnergy: value })} options={[
+          { value: "gentle", label: "Gentle" },
+          { value: "balanced", label: "Balanced" },
+          { value: "high", label: "High energy" }
+        ]} />
         <SelectControl<CaptionStyleDto> label="Caption style" value={wall.captionStyle} onChange={(value) => update({ captionStyle: value })} options={[
           { value: "none", label: "None" },
           { value: "simple-dates", label: "Simple dates" },
           { value: "memory-captions", label: "Memory captions" },
           { value: "diary-style-notes", label: "Diary-style notes" }
+        ]} />
+        <SelectControl<FrameVarietyDto> label="Frame variety" value={wall.frameVariety} onChange={(value) => update({ frameVariety: value })} options={[
+          { value: "low", label: "Low" },
+          { value: "medium", label: "Medium" },
+          { value: "high", label: "High" }
         ]} />
       </div>
     );
@@ -299,7 +316,7 @@ function Dashboard({ api, profile, onSignOut }: { api: ApiClient; profile: Curre
   }
 
   return (
-    <main className="mx-auto min-h-screen max-w-7xl px-4 py-6 md:px-8 md:py-10">
+    <main className="mx-auto min-h-screen w-full min-w-0 max-w-7xl overflow-x-clip px-4 py-6 md:px-8 md:py-10">
       <AccountHeader profile={profile} onSignOut={onSignOut} />
       <section className="mt-10 grid gap-8 xl:grid-cols-[1.02fr,0.98fr] xl:items-end">
         <div>
@@ -383,6 +400,74 @@ function FileDrop({ kind, files, onFiles, disabled }: { kind: "media" | "soundtr
   );
 }
 
+function PendingUploadList({
+  files,
+  kind,
+  disabled,
+  uploading,
+  onFiles,
+  onUpload
+}: {
+  files: File[];
+  kind: "media" | "soundtrack";
+  disabled: boolean;
+  uploading: boolean;
+  onFiles: (files: File[]) => void;
+  onUpload: () => Promise<void>;
+}) {
+  if (!files.length) return null;
+
+  const media = kind === "media";
+  const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+
+  return (
+    <div className="mt-3 min-w-0 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-slate-200">
+            {files.length} {files.length === 1 ? "file" : "files"} ready
+          </p>
+          <p className="mt-0.5 text-xs text-slate-500">{formatBytes(totalSize)} selected</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void onUpload()}
+          disabled={disabled}
+          className={`shrink-0 rounded-xl px-4 py-2 text-sm font-medium text-slate-950 disabled:opacity-50 ${media ? "bg-orange-200" : "bg-violet-200"}`}
+        >
+          {uploading ? "Uploading..." : media ? "Upload media" : "Upload MP3s"}
+        </button>
+      </div>
+
+      <div
+        className="mt-3 max-h-44 min-w-0 space-y-1.5 overflow-y-auto overscroll-contain rounded-lg border border-white/[0.06] bg-slate-950/40 p-2 pr-1"
+        role="list"
+        aria-label={`${media ? "Media" : "Soundtrack"} files ready to upload`}
+        tabIndex={0}
+      >
+        {files.map((file, index) => (
+          <div key={`${file.name}-${file.lastModified}-${index}`} role="listitem" className="flex min-w-0 items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-white/[0.04]">
+            <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-white/5 text-[0.65rem] text-slate-500">{index + 1}</span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs text-slate-300" title={file.name}>{file.name}</p>
+              <p className="mt-0.5 text-[0.65rem] text-slate-600">{formatBytes(file.size)}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onFiles(files.filter((_, fileIndex) => fileIndex !== index))}
+              disabled={disabled}
+              className="shrink-0 rounded-full px-2 py-1 text-xs text-slate-500 transition hover:bg-rose-300/10 hover:text-rose-200 disabled:opacity-50"
+              aria-label={`Remove ${file.name} from upload`}
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function MediaThumbnail({ api, asset }: { api: ApiClient; asset: MediaAssetDto }) {
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
 
@@ -417,17 +502,17 @@ function MediaThumbnail({ api, asset }: { api: ApiClient; asset: MediaAssetDto }
 
 function MediaList({ api, media, busyId, onDelete, disabled = false }: { api: ApiClient; media: MediaAssetDto[]; busyId: string | null; onDelete: (id: string) => Promise<void>; disabled?: boolean }) {
   return media.length ? (
-    <div className="space-y-2">
+    <div className="min-w-0 space-y-2">
       {media.map((asset) => (
-        <div key={asset.id} className="flex items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/[0.035] p-3">
-          <div className="flex min-w-0 items-center gap-3">
+        <div key={asset.id} className="flex min-w-0 items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/[0.035] p-3">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
             <MediaThumbnail api={api} asset={asset} />
             <div className="min-w-0">
-              <div className="flex items-center gap-2"><span className={`rounded-md px-2 py-0.5 text-[0.65rem] uppercase tracking-wide ${asset.type === "video" ? "bg-sky-300/10 text-sky-100" : "bg-orange-300/10 text-orange-100"}`}>{asset.type}</span><p className="truncate text-sm text-white">{asset.originalFilename}</p></div>
+              <div className="flex min-w-0 items-center gap-2"><span className={`shrink-0 rounded-md px-2 py-0.5 text-[0.65rem] uppercase tracking-wide ${asset.type === "video" ? "bg-sky-300/10 text-sky-100" : "bg-orange-300/10 text-orange-100"}`}>{asset.type}</span><p className="min-w-0 flex-1 truncate text-sm text-white" title={asset.originalFilename}>{asset.originalFilename}</p></div>
               <p className="mt-1 text-xs text-slate-500">{formatBytes(asset.size)}{formatDuration(asset.duration) ? ` · ${formatDuration(asset.duration)}` : ""}{asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : ""}</p>
             </div>
           </div>
-          <button type="button" disabled={disabled || busyId === asset.id} onClick={() => void onDelete(asset.id)} className="rounded-full px-3 py-1.5 text-xs text-rose-200 transition hover:bg-rose-300/10 disabled:opacity-50">{busyId === asset.id ? "Removing..." : "Remove"}</button>
+          <button type="button" disabled={disabled || busyId === asset.id} onClick={() => void onDelete(asset.id)} className="shrink-0 rounded-full px-3 py-1.5 text-xs text-rose-200 transition hover:bg-rose-300/10 disabled:opacity-50">{busyId === asset.id ? "Removing..." : "Remove"}</button>
         </div>
       ))}
     </div>
@@ -436,14 +521,14 @@ function MediaList({ api, media, busyId, onDelete, disabled = false }: { api: Ap
 
 function SoundtrackList({ soundtracks, busyId, onDelete, disabled = false }: { soundtracks: SoundtrackAssetDto[]; busyId: string | null; onDelete: (id: string) => Promise<void>; disabled?: boolean }) {
   return soundtracks.length ? (
-    <div className="space-y-2">
+    <div className="min-w-0 space-y-2">
       {soundtracks.map((track, index) => (
-        <div key={track.id} className="flex items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/[0.035] p-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2"><span className="grid h-7 w-7 place-items-center rounded-full bg-violet-300/10 text-xs text-violet-100">{index + 1}</span><p className="truncate text-sm text-white">{track.originalFilename}</p></div>
+        <div key={track.id} className="flex min-w-0 items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/[0.035] p-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2"><span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-violet-300/10 text-xs text-violet-100">{index + 1}</span><p className="min-w-0 flex-1 truncate text-sm text-white" title={track.originalFilename}>{track.originalFilename}</p></div>
             <p className="mt-1 pl-9 text-xs text-slate-500">{formatBytes(track.size)}{formatDuration(track.duration) ? ` · ${formatDuration(track.duration)}` : ""}{track.status ? ` · ${track.status}` : ""}</p>
           </div>
-          <button type="button" disabled={disabled || busyId === track.id} onClick={() => void onDelete(track.id)} className="rounded-full px-3 py-1.5 text-xs text-rose-200 transition hover:bg-rose-300/10 disabled:opacity-50">{busyId === track.id ? "Removing..." : "Remove"}</button>
+          <button type="button" disabled={disabled || busyId === track.id} onClick={() => void onDelete(track.id)} className="shrink-0 rounded-full px-3 py-1.5 text-xs text-rose-200 transition hover:bg-rose-300/10 disabled:opacity-50">{busyId === track.id ? "Removing..." : "Remove"}</button>
         </div>
       ))}
     </div>
@@ -503,6 +588,80 @@ function OutputCard({ api, projectId, output }: { api: ApiClient; projectId: str
         {error ? <p className="mt-2 text-xs text-rose-200">{error}</p> : null}
       </div>
     </article>
+  );
+}
+
+function FinishedOutputs({
+  api,
+  projectId,
+  mode,
+  outputs,
+  onRefresh
+}: {
+  api: ApiClient;
+  projectId: string;
+  mode: GenerationModeDto;
+  outputs: RenderOutputDto[];
+  onRefresh: () => void;
+}) {
+  const wallMasters = outputs.filter(
+    (output) => output.type === "wall-frame-master" || output.type === "wall-frame"
+  );
+  const wallClusters = outputs.filter((output) => output.type === "wall-frame-cluster");
+  const standardOutputs = outputs.filter(
+    (output) => output.type === "master" || output.type === "chapter"
+  );
+  const isWallCollection = wallMasters.length > 0 || wallClusters.length > 0;
+
+  return (
+    <section className="mt-7 rounded-[2rem] border border-white/10 bg-slate-950/40 p-6 md:p-8">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="text-xs uppercase tracking-[0.3em] text-emerald-200/70">Saved results</p>
+          <h2 className="mt-2 text-3xl text-white" style={{ fontFamily: "var(--font-heading)" }}>
+            {isWallCollection ? "Your memory gallery" : "Finished videos"}
+          </h2>
+        </div>
+        <button type="button" onClick={onRefresh} className="rounded-full border border-white/10 px-4 py-2 text-sm text-slate-300 hover:bg-white/5">
+          Refresh outputs
+        </button>
+      </div>
+      {!outputs.length ? (
+        <div className="mt-6 rounded-2xl border border-dashed border-white/10 p-8 text-center">
+          <p className="text-white">No completed videos yet</p>
+          <p className="mt-2 text-sm text-slate-500">Finished master, chapter, and wall-frame videos will stay attached to this project.</p>
+        </div>
+      ) : isWallCollection ? (
+        <div className="mt-6 space-y-8">
+          <div>
+            <p className="mb-4 text-xs uppercase tracking-[0.28em] text-sky-200/75">Wall Frame Master</p>
+            <div className="grid gap-5 lg:grid-cols-2">
+              {wallMasters.map((output) => <OutputCard key={output.id} api={api} projectId={projectId} output={output} />)}
+            </div>
+          </div>
+          {wallClusters.length ? (
+            <div>
+              <p className="mb-4 text-xs uppercase tracking-[0.28em] text-orange-200/75">Memory Stories / Clusters</p>
+              <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+                {wallClusters.map((output) => <OutputCard key={output.id} api={api} projectId={projectId} output={output} />)}
+              </div>
+            </div>
+          ) : null}
+          {standardOutputs.length ? (
+            <div>
+              <p className="mb-4 text-xs uppercase tracking-[0.28em] text-emerald-200/75">Diary videos</p>
+              <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+                {standardOutputs.map((output) => <OutputCard key={output.id} api={api} projectId={projectId} output={output} />)}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <div className="mt-6 grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+          {standardOutputs.map((output) => <OutputCard key={output.id} api={api} projectId={projectId} output={output} />)}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -651,7 +810,7 @@ function ProjectStudio({ api, projectId, profile, onSignOut }: { api: ApiClient;
   if (!project) return <main className="mx-auto min-h-screen max-w-3xl px-4 py-10"><Notice>{error || "This project could not be found."}</Notice><Link href="/" className="mt-5 inline-block text-sm text-orange-100">← Back to projects</Link></main>;
 
   return (
-    <main className="mx-auto min-h-screen max-w-7xl px-4 py-6 md:px-8 md:py-10">
+    <main className="mx-auto min-h-screen w-full min-w-0 max-w-7xl overflow-x-clip px-4 py-6 md:px-8 md:py-10">
       <AccountHeader profile={profile} onSignOut={onSignOut} />
       <div className="mt-7 flex flex-wrap items-center justify-between gap-4"><Link href="/" className="text-sm text-slate-400 transition hover:text-white">← All projects</Link><button type="button" onClick={() => void deleteProject()} disabled={busy !== null || isActiveJob(job)} title={isActiveJob(job) ? "Wait for the active render to finish before deleting." : undefined} className="rounded-full px-4 py-2 text-sm text-rose-200 hover:bg-rose-300/10 disabled:opacity-50">{busy === "delete-project" ? "Deleting..." : isActiveJob(job) ? "Render in progress" : "Delete project"}</button></div>
 
@@ -662,21 +821,27 @@ function ProjectStudio({ api, projectId, profile, onSignOut }: { api: ApiClient;
         {job ? <div className="mt-5"><RenderStatus job={job} /></div> : null}
       </section>
 
-      <div className="mt-7 grid gap-7 xl:grid-cols-[1.08fr,0.92fr]">
-        <div className="space-y-7">
-          <section className="rounded-[2rem] border border-white/10 bg-slate-950/40 p-6 md:p-8"><div className="flex items-start justify-between gap-4"><div><p className="text-xs uppercase tracking-[0.3em] text-orange-200/70">1 · Add the memories</p><h2 className="mt-2 text-3xl text-white" style={{ fontFamily: "var(--font-heading)" }}>Photos and videos</h2></div><span className="text-xs text-slate-500">Stored locally</span></div><div className="mt-5"><FileDrop kind="media" files={mediaFiles} onFiles={setMediaFiles} disabled={busy !== null || isActiveJob(job)} /></div>{mediaFiles.length ? <div className="mt-3 flex items-center justify-between gap-4 rounded-xl bg-white/[0.03] p-3"><p className="truncate text-xs text-slate-400">{mediaFiles.map((file) => file.name).join(", ")}</p><button type="button" onClick={() => void uploadMedia()} disabled={busy !== null} className="shrink-0 rounded-xl bg-orange-200 px-4 py-2 text-sm font-medium text-slate-950 disabled:opacity-50">{busy === "media" ? "Uploading..." : "Upload media"}</button></div> : null}<div className="mt-5 max-h-96 overflow-y-auto pr-1"><MediaList api={api} media={media} busyId={deletingId} onDelete={deleteMedia} disabled={isActiveJob(job)} /></div></section>
+      <div className="mt-7 grid min-w-0 gap-7 xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
+        <div className="min-w-0 space-y-7">
+          <section className="min-w-0 rounded-[2rem] border border-white/10 bg-slate-950/40 p-6 md:p-8"><div className="flex items-start justify-between gap-4"><div><p className="text-xs uppercase tracking-[0.3em] text-orange-200/70">1 · Add the memories</p><h2 className="mt-2 text-3xl text-white" style={{ fontFamily: "var(--font-heading)" }}>Photos and videos</h2></div><span className="text-xs text-slate-500">Stored locally</span></div><div className="mt-5"><FileDrop kind="media" files={mediaFiles} onFiles={setMediaFiles} disabled={busy !== null || isActiveJob(job)} /></div><PendingUploadList files={mediaFiles} kind="media" disabled={busy !== null} uploading={busy === "media"} onFiles={setMediaFiles} onUpload={uploadMedia} /><div className="mt-5 max-h-96 min-w-0 overflow-y-auto pr-1"><MediaList api={api} media={media} busyId={deletingId} onDelete={deleteMedia} disabled={isActiveJob(job)} /></div></section>
 
-          <section className="rounded-[2rem] border border-white/10 bg-slate-950/40 p-6 md:p-8"><div className="flex items-start justify-between gap-4"><div><p className="text-xs uppercase tracking-[0.3em] text-violet-200/70">2 · Set the soundtrack</p><h2 className="mt-2 text-3xl text-white" style={{ fontFamily: "var(--font-heading)" }}>Your MP3 collection</h2><p className="mt-2 text-sm leading-6 text-slate-400">When you add MP3s, the final background music comes only from this list. Source clip audio is mixed in where it matters.</p></div><span className="rounded-full bg-white/5 px-3 py-1 text-xs text-slate-400">Optional</span></div><div className="mt-5"><FileDrop kind="soundtrack" files={soundtrackFiles} onFiles={setSoundtrackFiles} disabled={busy !== null || isActiveJob(job)} /></div>{soundtrackFiles.length ? <div className="mt-3 flex items-center justify-between gap-4 rounded-xl bg-white/[0.03] p-3"><p className="truncate text-xs text-slate-400">{soundtrackFiles.map((file) => file.name).join(", ")}</p><button type="button" onClick={() => void uploadSoundtracks()} disabled={busy !== null} className="shrink-0 rounded-xl bg-violet-200 px-4 py-2 text-sm font-medium text-slate-950 disabled:opacity-50">{busy === "soundtracks" ? "Uploading..." : "Upload MP3s"}</button></div> : null}<div className="mt-5 max-h-80 overflow-y-auto pr-1"><SoundtrackList soundtracks={soundtracks} busyId={deletingId} onDelete={deleteSoundtrack} disabled={isActiveJob(job)} /></div></section>
+          <section className="min-w-0 rounded-[2rem] border border-white/10 bg-slate-950/40 p-6 md:p-8"><div className="flex items-start justify-between gap-4"><div className="min-w-0"><p className="text-xs uppercase tracking-[0.3em] text-violet-200/70">2 · Set the soundtrack</p><h2 className="mt-2 text-3xl text-white" style={{ fontFamily: "var(--font-heading)" }}>Your MP3 collection</h2><p className="mt-2 text-sm leading-6 text-slate-400">When you add MP3s, the final background music comes only from this list. Source clip audio is mixed in where it matters.</p></div><span className="shrink-0 rounded-full bg-white/5 px-3 py-1 text-xs text-slate-400">Optional</span></div><div className="mt-5"><FileDrop kind="soundtrack" files={soundtrackFiles} onFiles={setSoundtrackFiles} disabled={busy !== null || isActiveJob(job)} /></div><PendingUploadList files={soundtrackFiles} kind="soundtrack" disabled={busy !== null} uploading={busy === "soundtracks"} onFiles={setSoundtrackFiles} onUpload={uploadSoundtracks} /><div className="mt-5 max-h-80 min-w-0 overflow-y-auto pr-1"><SoundtrackList soundtracks={soundtracks} busyId={deletingId} onDelete={deleteSoundtrack} disabled={isActiveJob(job)} /></div></section>
         </div>
 
-        <div className="space-y-7">
+        <div className="min-w-0 space-y-7">
           <section className="rounded-[2rem] border border-white/10 bg-slate-950/40 p-6 md:p-8"><p className="text-xs uppercase tracking-[0.3em] text-sky-200/70">3 · Choose the experience</p><h2 className="mt-2 text-3xl text-white" style={{ fontFamily: "var(--font-heading)" }}>Creative direction</h2><div className="mt-5"><ModeSelector value={mode} onChange={changeMode} disabled={busy !== null || isActiveJob(job)} /></div><div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.025] p-4"><GenerationControls mode={mode} settings={settings} onChange={setSettings} /></div><button type="button" onClick={() => void saveDirection()} disabled={busy !== null || isActiveJob(job)} className="mt-4 w-full rounded-xl border border-white/10 px-4 py-2.5 text-sm text-slate-200 hover:bg-white/5 disabled:opacity-50">{busy === "save" ? "Saving..." : "Save creative direction"}</button></section>
 
           <section className="rounded-[2rem] border border-white/10 bg-gradient-to-br from-orange-200/[0.09] via-slate-950/50 to-sky-200/[0.09] p-6 md:p-8"><p className="text-xs uppercase tracking-[0.3em] text-orange-100/70">4 · Render locally</p><h2 className="mt-2 text-3xl text-white" style={{ fontFamily: "var(--font-heading)" }}>Build {mode === "wall-frame" ? "the framed-wall film" : "the memory book"}</h2><p className="mt-3 text-sm leading-6 text-slate-300">The authenticated backend keeps heavy analysis, local storage, and FFmpeg rendering off the hosted frontend.</p><div className="mt-5 rounded-2xl bg-black/20 p-4 text-xs leading-5 text-slate-400"><div className="flex justify-between gap-3"><span>Format</span><span className="text-right text-slate-200">{modeLabel(mode)}</span></div><div className="mt-2 flex justify-between gap-3"><span>Media ready</span><span className="text-slate-200">{media.length}</span></div><div className="mt-2 flex justify-between gap-3"><span>Music source</span><span className="text-right text-slate-200">{soundtracks.length ? `${soundtracks.length} uploaded MP3${soundtracks.length === 1 ? "" : "s"}` : "Royalty-free fallback"}</span></div></div><button type="button" onClick={() => void startRender()} disabled={busy !== null || isActiveJob(job) || !media.length} className="mt-5 w-full rounded-2xl bg-gradient-to-r from-orange-300 via-amber-200 to-sky-300 px-5 py-3 font-semibold text-slate-950 transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50">{busy === "render" ? "Queuing render..." : isActiveJob(job) ? "Render in progress" : `Render ${mode === "wall-frame" ? "Wall Frame Memories" : "Diary Memory Book"}`}</button>{!media.length ? <p className="mt-3 text-center text-xs text-slate-500">Upload at least one photo or video to enable rendering.</p> : null}</section>
         </div>
       </div>
 
-      <section className="mt-7 rounded-[2rem] border border-white/10 bg-slate-950/40 p-6 md:p-8"><div className="flex flex-wrap items-end justify-between gap-4"><div><p className="text-xs uppercase tracking-[0.3em] text-emerald-200/70">Saved results</p><h2 className="mt-2 text-3xl text-white" style={{ fontFamily: "var(--font-heading)" }}>Finished videos</h2></div><button type="button" onClick={() => void refresh(true)} className="rounded-full border border-white/10 px-4 py-2 text-sm text-slate-300 hover:bg-white/5">Refresh outputs</button></div>{outputs.length ? <div className="mt-6 grid gap-5 md:grid-cols-2 xl:grid-cols-3">{outputs.map((output) => <OutputCard key={output.id} api={api} projectId={projectId} output={output} />)}</div> : <div className="mt-6 rounded-2xl border border-dashed border-white/10 p-8 text-center"><p className="text-white">No completed videos yet</p><p className="mt-2 text-sm text-slate-500">Finished master, chapter, and wall-frame videos will stay attached to this project.</p></div>}</section>
+      <FinishedOutputs
+        api={api}
+        projectId={projectId}
+        mode={mode}
+        outputs={outputs}
+        onRefresh={() => void refresh(true)}
+      />
     </main>
   );
 }

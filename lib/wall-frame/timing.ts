@@ -15,6 +15,7 @@ function roundTime(value: number) {
 
 export function allocateWallSectionDurations(options: {
   frameCounts: number[];
+  heroCounts?: number[];
   videoCounts?: number[];
   cameraMotion: WallFrameCameraMotion;
   durationTargetSec?: number;
@@ -28,13 +29,14 @@ export function allocateWallSectionDurations(options: {
     const videoCount = options.videoCounts?.[index] ?? 0;
     return 0.84 + Math.min(Math.max(count, 1), 5) * 0.09 + Math.min(videoCount, 2) * 0.07;
   });
-  const defaultDurations = rawWeights.map((weight) =>
-    clamp(
-      motion.sectionDurationSec * weight,
+  const defaultDurations = rawWeights.map((weight, index) => {
+    const heroCount = Math.max(1, options.heroCounts?.[index] ?? 1);
+    return clamp(
+      motion.sectionDurationSec * weight * (1 + (heroCount - 1) * 0.7),
       motion.minSectionDurationSec,
-      motion.maxSectionDurationSec
-    )
-  );
+      Math.max(motion.maxSectionDurationSec * heroCount, 26)
+    );
+  });
 
   if (!options.durationTargetSec || options.durationTargetSec <= 0) {
     return defaultDurations.map(roundTime);
@@ -42,18 +44,24 @@ export function allocateWallSectionDurations(options: {
 
   const transitionTotal =
     Math.max(0, options.frameCounts.length - 1) * motion.transitionDurationSec;
+  const minimumSectionTime = options.frameCounts.reduce(
+    (sum, _count, index) =>
+      sum + motion.minSectionDurationSec * (1 + Math.max(0, (options.heroCounts?.[index] ?? 1) - 1) * 0.55),
+    0
+  );
   const availableSectionTime = Math.max(
-    motion.minSectionDurationSec * options.frameCounts.length,
+    minimumSectionTime,
     options.durationTargetSec + transitionTotal
   );
   const weightTotal = rawWeights.reduce((sum, value) => sum + value, 0);
-  const scaled = rawWeights.map((weight) =>
-    clamp(
+  const scaled = rawWeights.map((weight, index) => {
+    const heroCount = Math.max(1, options.heroCounts?.[index] ?? 1);
+    return clamp(
       (availableSectionTime * weight) / weightTotal,
       motion.minSectionDurationSec,
-      motion.maxSectionDurationSec
-    )
-  );
+      Math.max(motion.maxSectionDurationSec * heroCount, 26)
+    );
+  });
   return scaled.map(roundTime);
 }
 

@@ -15,6 +15,8 @@ export interface VideoProbeSummary {
   fps?: number;
   sampleAspectRatio?: string;
   displayAspectRatio?: string;
+  hasAudio: boolean;
+  audioCodecName?: string;
 }
 
 export interface VideoValidationOptions {
@@ -27,6 +29,8 @@ export interface VideoValidationOptions {
   requireH264?: boolean;
   requireYuv420p?: boolean;
   decode?: boolean;
+  requireAudio?: boolean;
+  requireAac?: boolean;
 }
 
 export interface VideoValidationResult {
@@ -78,7 +82,7 @@ export function formatVideoDiagnostics(result: VideoValidationResult) {
         metadata.pixelFormat ?? "unknown"
       }; resolution=${metadata.width ?? "?"}x${metadata.height ?? "?"}; fps=${
         metadata.fps ? metadata.fps.toFixed(3) : "unknown"
-      }; sar=${metadata.sampleAspectRatio ?? "unknown"}`
+      }; sar=${metadata.sampleAspectRatio ?? "unknown"}; audio=${metadata.audioCodecName ?? "none"}`
     : "metadata unavailable";
   return `${result.reason ?? "unknown validation failure"} (${details})`;
 }
@@ -92,6 +96,7 @@ export async function probeVideoSummary(filePath: string): Promise<VideoProbeSum
     parseFiniteNumber(probe.format?.duration) ??
     0;
   const fps = parseRate(stream?.avg_frame_rate) ?? parseRate(stream?.r_frame_rate);
+  const audioStream = probe.streams?.find((item) => item.codec_type === "audio");
 
   return {
     path: filePath,
@@ -103,7 +108,9 @@ export async function probeVideoSummary(filePath: string): Promise<VideoProbeSum
     height: stream?.height,
     fps,
     sampleAspectRatio: stream?.sample_aspect_ratio,
-    displayAspectRatio: stream?.display_aspect_ratio
+    displayAspectRatio: stream?.display_aspect_ratio,
+    hasAudio: Boolean(audioStream),
+    audioCodecName: audioStream?.codec_name
   };
 }
 
@@ -152,6 +159,12 @@ export async function validateVideoFile(
   }
   if (options.requireYuv420p && metadata.pixelFormat !== "yuv420p") {
     return invalid(`${label} pixel format ${metadata.pixelFormat ?? "unknown"} is not yuv420p`, metadata);
+  }
+  if (options.requireAudio && !metadata.hasAudio) {
+    return invalid(`${label} has no audio stream`, metadata);
+  }
+  if (options.requireAac && metadata.audioCodecName !== "aac") {
+    return invalid(`${label} audio codec ${metadata.audioCodecName ?? "unknown"} is not aac`, metadata);
   }
 
   if (options.decode !== false) {

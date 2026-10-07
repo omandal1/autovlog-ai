@@ -14,6 +14,7 @@ import {
 } from "@/lib/wall-frame/timing";
 import type {
   MemoryFrame,
+  MotionBeat,
   WallFrameRenderPlan,
   WallFrameSectionTiming,
   WallSection
@@ -141,19 +142,32 @@ function buildMediaFilter(
   width: number,
   height: number,
   durationSec: number,
-  fps: number
+  fps: number,
+  playbackStartSec = 0
 ) {
   const sizing =
     frame.cropMode === "contain"
       ? `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=0x171717`
       : `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`;
   const common = `${sizing},setsar=1,fps=${fps}`;
+  const shapeMask =
+    frame.frameShape === "circle"
+      ? `,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(pow(X-W/2,2)+pow(Y-H/2,2),pow(min(W,H)/2,2)),255,0)'`
+      : frame.frameShape === "oval"
+      ? `,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(pow((X-W/2)/(W/2),2)+pow((Y-H/2)/(H/2),2),1),255,0)'`
+      : frame.frameShape === "arch-top"
+        ? `,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(gte(Y,min(W/2,H/2)),255,if(lte(pow((X-W/2)/(W/2),2)+pow((Y-min(W/2,H/2))/min(W/2,H/2),2),1),255,0))'`
+      : frame.frameShape === "rounded-rectangle"
+        ? `,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(pow(max(abs(X-W/2)-(W/2-12),0),2)+pow(max(abs(Y-H/2)-(H/2-12),0),2),144),255,0)'`
+        : frame.frameShape === "octagonal"
+          ? `,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(gte(min(X,W-1-X)+min(Y,H-1-Y),min(W,H)*0.18),255,0)'`
+          : "";
   if (frame.mediaType === "image") {
-    return `${common},trim=duration=${durationSec.toFixed(3)},setpts=PTS-STARTPTS,format=rgba`;
+    return `${common},zoompan=z='min(zoom+0.00035,1.045)':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d=1:s=${width}x${height}:fps=${fps},trim=duration=${durationSec.toFixed(3)},setpts=PTS-STARTPTS,format=rgba${shapeMask}`;
   }
-  return `${common},tpad=stop_mode=clone:stop_duration=${durationSec.toFixed(
+  return `${common},tpad=start_mode=clone:start_duration=${playbackStartSec.toFixed(3)}:stop_mode=clone:stop_duration=${durationSec.toFixed(
     3
-  )},trim=duration=${durationSec.toFixed(3)},setpts=PTS-STARTPTS,format=rgba`;
+  )},trim=duration=${durationSec.toFixed(3)},setpts=PTS-STARTPTS,format=rgba${shapeMask}`;
 }
 
 function buildCameraFilter(options: {
@@ -165,24 +179,84 @@ function buildCameraFilter(options: {
   fps: number;
 }) {
   const frames = Math.max(1, Math.round(options.section.durationSec * options.fps));
-  const denominator = Math.max(frames - 1, 1);
-  const progress =
+  const beats = options.section.motionBeats?.length ? options.section.motionBeats : undefined;
+  const buildProgress = (beat: MotionBeat, startFrame: number, durationFrames: number) => {
+    const normalized = `clip((on-${startFrame})/${Math.max(1, durationFrames)},0,1)`;
+    switch (beat.easing) {
+      case "ease-in-out":
+        return `(1-cos(PI*${normalized}))/2`;
+      case "ease-out-quart":
+        return `1-pow(1-${normalized},4)`;
+      case "ease-out-expo":
+        return `if(gte(${normalized},1),1,1-pow(2,-10*${normalized}))`;
+      default:
+        return normalized;
+    }
+  };
+  const buildBeatExpression = (
+    read: (beat: MotionBeat) => { start: number; end: number }
+  ) => {
+    if (!beats) return undefined;
+    let expression = read(beats.at(-1)!).end.toFixed(7);
+    for (let index = beats.length - 1; index >= 0; index -= 1) {
+      const beat = beats[index]!;
+      const startFrame = Math.max(0, Math.round(beat.startTimeSec * options.fps));
+      const durationFrames = Math.max(1, Math.round(beat.durationSec * options.fps));
+      const endFrame = startFrame + durationFrames;
+      const values = read(beat);
+      const progress = buildProgress(beat, startFrame, durationFrames);
+      const interpolated = `${values.start.toFixed(7)}+${(
+        values.end - values.start
+      ).toFixed(7)}*(${progress})`;
+      expression = `if(lt(on,${startFrame}),${values.start.toFixed(7)},if(lte(on,${endFrame}),${interpolated},${expression}))`;
+    }
+    return expression;
+  };
+  const legacyDenominator = Math.max(frames - 1, 1);
+  const legacyProgress =
     options.section.cameraPath.easing === "ease-in-out"
-      ? `(1-cos(PI*on/${denominator}))/2`
-      : `on/${denominator}`;
+      ? `(1-cos(PI*on/${legacyDenominator}))/2`
+      : `on/${legacyDenominator}`;
   const { start, end } = options.section.cameraPath;
-  const baseZoom = Math.max(
-    options.canvasWidth / options.outputWidth,
-    options.canvasHeight / options.outputHeight
+  const scaleExpression =
+    buildBeatExpression((beat) => ({
+      start: beat.cameraTransformStart.scale,
+      end: beat.cameraTransformEnd.scale
+    })) ?? `${start.zoom.toFixed(7)}+${(end.zoom - start.zoom).toFixed(7)}*${legacyProgress}`;
+  const focusX =
+    buildBeatExpression((beat) => ({
+      start: beat.cameraTransformStart.x,
+      end: beat.cameraTransformEnd.x
+    })) ?? `${start.x.toFixed(7)}+${(end.x - start.x).toFixed(7)}*${legacyProgress}`;
+  const focusY =
+    buildBeatExpression((beat) => ({
+      start: beat.cameraTransformStart.y,
+      end: beat.cameraTransformEnd.y
+    })) ?? `${start.y.toFixed(7)}+${(end.y - start.y).toFixed(7)}*${legacyProgress}`;
+  // The canvas is oversampled for quality. zoompan already scales its whole
+  // input to the output size: multiplying by that ratio crops the wide reveal.
+  const zoom = `max(1,${scaleExpression})`;
+  const blurBeats = (beats ?? []).filter(
+    (beat) =>
+      Math.max(
+        beat.cameraTransformStart.blur,
+        beat.cameraTransformEnd.blur,
+        beat.transitionParams?.motionBlurAmount ?? 0
+      ) >= 0.45
   );
-  const zoom = `${baseZoom.toFixed(7)}*(${start.zoom.toFixed(7)}+${(
-    end.zoom - start.zoom
-  ).toFixed(7)}*${progress})`;
-  const focusX = `${start.x.toFixed(7)}+${(end.x - start.x).toFixed(7)}*${progress}`;
-  const focusY = `${start.y.toFixed(7)}+${(end.y - start.y).toFixed(7)}*${progress}`;
-  return `zoompan=z='${zoom}':x='(iw-iw/zoom)*(${focusX})':y='(ih-ih/zoom)*(${focusY})':d=1:s=${options.outputWidth}x${options.outputHeight}:fps=${options.fps},trim=duration=${options.section.durationSec.toFixed(
+  const blurFilter = blurBeats.length
+    ? `,gblur=sigma=1.35:steps=2:enable='${blurBeats
+        .map(
+          (beat) =>
+            `between(t,${beat.startTimeSec.toFixed(3)},${(
+              beat.startTimeSec + beat.durationSec
+            ).toFixed(3)})`
+        )
+        .join("+")}'`
+    : "";
+  return `zoompan=z='${zoom}':x='clip(iw*(${focusX})-iw/zoom/2,0,iw-iw/zoom)':y='clip(ih*(${focusY})-ih/zoom/2,0,ih-ih/zoom)':d=1:s=${options.outputWidth}x${options.outputHeight}:fps=${options.fps},trim=duration=${options.section.durationSec.toFixed(
     3
-  )},setpts=PTS-STARTPTS,vignette=PI/9,setsar=1,format=yuv420p`;
+  )},setpts=PTS-STARTPTS${blurFilter},vignette=PI/9,setsar=1,format=yuv420p`;
 }
 
 function safeCaption(value: string | undefined) {
@@ -191,6 +265,8 @@ function safeCaption(value: string | undefined) {
 
 async function renderWallSection(options: {
   section: WallSection;
+  title: string;
+  isFinal: boolean;
   outputPath: string;
   width: number;
   height: number;
@@ -286,7 +362,10 @@ async function renderWallSection(options: {
         mediaWidth,
         mediaHeight,
         options.section.durationSec,
-        options.fps
+        options.fps,
+        options.section.motionBeats.find(
+          (beat) => beat.type === "hero-push-in" && beat.activeFrameIds.includes(frame.id)
+        )?.startTimeSec ?? 0
       )}${mediaLabel}`
     );
     filters.push(
@@ -315,6 +394,7 @@ async function renderWallSection(options: {
     currentLabel = nextLabel;
   });
 
+  const cameraOutputLabel = options.isFinal ? "[cameraout]" : "[vout]";
   filters.push(
     `${currentLabel}${buildCameraFilter({
       section: options.section,
@@ -323,8 +403,27 @@ async function renderWallSection(options: {
       outputWidth: options.width,
       outputHeight: options.height,
       fps: options.fps
-    })}[vout]`
+    })}${cameraOutputLabel}`
   );
+  if (options.isFinal) {
+    const finalReveal = options.section.motionBeats.find(
+      (beat) => beat.type === "final-wall-reveal"
+    );
+    const titleStart = Math.max(0, finalReveal?.startTimeSec ?? options.section.durationSec - 1.6);
+    const title = safeCaption(options.title) ?? "Wall Frame Memories";
+    const fontPart = fontPath ? `fontfile='${escapeForDrawtext(fontPath)}':` : "";
+    const fontSize = clamp(Math.round(options.height * 0.045), 20, 52);
+    const fadeStart = Math.max(titleStart, options.section.durationSec - 0.38);
+    filters.push(
+      `[cameraout]drawbox=x=iw*0.2:y=ih*0.82:w=iw*0.6:h=ih*0.105:color=black@0.42:t=fill:enable='gte(t,${titleStart.toFixed(
+        3
+      )})',drawtext=${fontPart}text='${escapeForDrawtext(
+        title
+      )}':x=(w-text_w)/2:y=h*0.845:fontsize=${fontSize}:fontcolor=white:borderw=2:bordercolor=black@0.35:enable='gte(t,${titleStart.toFixed(
+        3
+      )})',fade=t=out:st=${fadeStart.toFixed(3)}:d=0.38[vout]`
+    );
+  }
 
   await writeAtomicVideo({
     outputPath: options.outputPath,
@@ -375,8 +474,22 @@ function mapTransition(section: WallSection) {
       return "smoothleft";
     case "glide-right":
       return "smoothright";
+    case "slide-up":
+      return "slideup";
+    case "slide-down":
+      return "slidedown";
+    case "whip-left":
+      return "hlwind";
+    case "whip-right":
+      return "hrwind";
+    case "frame-flip-x":
+      return "squeezev";
+    case "frame-flip-y":
+      return "squeezeh";
+    case "zoom-through":
+      return "zoomin";
     default:
-      return "fade";
+      return "smoothleft";
   }
 }
 
@@ -597,19 +710,28 @@ function collectAudioInputs(options: {
       startSec: Math.max(0, segment.startSec),
       durationSec: Math.min(segment.durationSec, options.durationSec - segment.startSec),
       gain: toLinearGain(segment.volumeDb) * 0.58,
-      fadeSec: clamp(segment.crossfadeSec || 0.35, 0.08, 1.5)
+      fadeSec: clamp(segment.crossfadeSec || 0.025, 0.01, 1.5)
     }));
   const source: AudioInputSpec[] = [];
 
   if (options.preserveSourceAudio) {
     for (const timing of options.sectionTimings) {
       const section = options.plan.wallSections.find((item) => item.id === timing.sectionId);
-      const frame = section?.frames.find(
+      const frames = section?.frames.filter(
         (item) => item.useSourceAudio && item.mediaType === "video" && item.audioSourcePath
-      );
+      ) ?? [];
+      for (const frame of frames) {
       if (!frame?.audioSourcePath) {
         continue;
       }
+      const heroBeats = section!.motionBeats.filter(
+        (beat) => (beat.type === "hero-push-in" || beat.type === "hero-focus-hold") &&
+          beat.activeFrameIds.includes(frame.id)
+      );
+      const playbackStartSec = heroBeats[0]?.startTimeSec ?? 0;
+      const heroEndSec = heroBeats.length
+        ? Math.max(...heroBeats.map((beat) => beat.startTimeSec + beat.durationSec))
+        : timing.durationSec;
       const remainingSource = frame.sourceDurationSec
         ? Math.max(0.1, frame.sourceDurationSec - frame.trimStartSec)
         : timing.durationSec;
@@ -617,11 +739,12 @@ function collectAudioInputs(options: {
         kind: "source",
         sourcePath: frame.audioSourcePath,
         sourceOffsetSec: Math.max(0, frame.trimStartSec),
-        startSec: timing.startSec,
-        durationSec: Math.min(timing.durationSec, remainingSource),
+        startSec: timing.startSec + playbackStartSec,
+        durationSec: Math.min(heroEndSec - playbackStartSec, remainingSource),
         gain: 0.88,
         fadeSec: 0.22
       });
+      }
     }
   }
   return { music, source };
@@ -664,7 +787,7 @@ function createAudioMixFilter(inputs: AudioInputSpec[], durationSec: number, duc
   let combinedLabel: string;
   if (musicLabels.length && sourceLabels.length && duckMusic) {
     filters.push(
-      `[source]asplit=2[source_sc][source_mix]`,
+      `[source]apad=whole_dur=${durationSec.toFixed(3)},atrim=duration=${durationSec.toFixed(3)},asplit=2[source_sc][source_mix]`,
       `[music][source_sc]sidechaincompress=threshold=0.045:ratio=7:attack=18:release=360[ducked]`,
       `[ducked][source_mix]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[combined]`
     );
@@ -867,6 +990,8 @@ async function renderCandidate(options: {
     sectionPaths.push(sectionPath);
     await renderWallSection({
       section,
+      title: options.plan.title,
+      isFinal: index === options.plan.wallSections.length - 1,
       outputPath: sectionPath,
       width,
       height,

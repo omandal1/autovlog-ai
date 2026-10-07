@@ -6,8 +6,10 @@ import { clusterRecurringFaces } from "@/lib/analysis/face-clustering";
 import { applyQualityTiers } from "@/lib/analysis/quality-filter";
 import { enrichAssetsWithTranscription } from "@/lib/analysis/transcription";
 import { analyzeMp3FileWithFallback } from "@/lib/audio/soundtrack-analysis";
+import { balanceChapterSoundtracks } from "@/lib/audio/chapter-soundtrack-balancer";
 import { DEFAULT_GENERATION_SETTINGS } from "@/lib/constants";
 import { createStoryPlan } from "@/lib/story/story-planner";
+import { enrichAssetsWithEditorialAnalysis } from "@/lib/editorial/editorial-planner";
 import type {
   GenerationSettings,
   MediaAsset,
@@ -26,6 +28,10 @@ import {
 import { runWithConcurrency } from "@/lib/utils";
 import { extractMetadata } from "@/media-processing/metadata";
 import { preprocessAsset } from "@/media-processing/preprocess";
+import {
+  validateMediaSource,
+  validateSoundtrackSource
+} from "@/media-processing/validation";
 import { renderTimeline } from "@/render/render-service";
 import { mergePythonSuggestions, scoreAssetsWithHeuristics } from "@/scoring/heuristics";
 import { requestChapterLabels, requestPythonSuggestions } from "@/scoring/python-service";
@@ -79,6 +85,10 @@ function existingString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined;
+}
+
 async function fileExists(filePath?: string) {
   if (!filePath) {
     return false;
@@ -113,6 +123,7 @@ function createGenerationSettings(project: ProjectRecord): GenerationSettings {
 
   return normalizeGenerationSettings({
     ...DEFAULT_GENERATION_SETTINGS,
+    ...(settings as Partial<GenerationSettings>),
     generationMode: project.generationMode,
     themePreset,
     pacing,
@@ -199,9 +210,15 @@ export class AutoVlogPipelineAdapter implements ProjectPipelineAdapter {
   constructor(private readonly repository: AutoVlogRepository) {}
 
   async mediaUploaded(project: ProjectRecord, media: MediaAssetRecord[]) {
-    await Promise.all(
-      media.map(async (record, uploadOrder) => {
+    await runWithConcurrency(
+      media,
+      8,
+      async (record, uploadOrder) => {
         try {
+          const validation = await validateMediaSource(record.localPath, record.type);
+          if (!validation.valid) {
+            throw new Error(validation.reason ?? "Uploaded media is invalid.");
+          }
           const metadata = await extractMetadata({
             filePath: record.localPath,
             filename: record.originalFilename,
@@ -214,21 +231,28 @@ export class AutoVlogPipelineAdapter implements ProjectPipelineAdapter {
             duration: metadata.durationSec,
             width: metadata.width,
             height: metadata.height,
-            metadata: asJsonObject(metadata)
+            metadata: asJsonObject(metadata),
+            analysis: { validationStatus: "valid" }
           });
         } catch (error) {
           await this.repository.updateMedia(project.userId, project.id, record.id, {
             analysis: { ingestError: messageFrom(error).slice(0, 1_000) }
           });
         }
-      })
+      }
     );
   }
 
   async soundtracksUploaded(project: ProjectRecord, soundtracks: SoundtrackAssetRecord[]) {
-    await Promise.all(
-      soundtracks.map(async (record) => {
+    await runWithConcurrency(
+      soundtracks,
+      4,
+      async (record) => {
         try {
+          const validation = await validateSoundtrackSource(record.localPath);
+          if (!validation.valid) {
+            throw new Error(validation.reason ?? "Uploaded soundtrack is invalid.");
+          }
           const analysis = await analyzeMp3FileWithFallback(
             record.localPath,
             record.originalFilename
@@ -245,7 +269,7 @@ export class AutoVlogPipelineAdapter implements ProjectPipelineAdapter {
             analysis: { error: messageFrom(error).slice(0, 1_000) }
           });
         }
-      })
+      }
     );
   }
 
@@ -257,25 +281,45 @@ export class AutoVlogPipelineAdapter implements ProjectPipelineAdapter {
     const requested = requestedIds.length
       ? input.soundtracks.filter((record) => requestedIds.includes(record.id))
       : input.soundtracks;
-    const result: UploadedSoundtrack[] = [];
-
-    for (const record of requested) {
-      const safePath = await runtime.storage.getSoundtrackPath(
-        input.user.id,
-        input.project.id,
-        record.localPath
-      );
-      const analysis =
-        storedAnalysis(record) ??
-        (await analyzeMp3FileWithFallback(safePath, record.originalFilename));
-      await this.repository.updateSoundtrack(input.user.id, input.project.id, record.id, {
-        duration: analysis.durationSec,
-        bitrate: analysis.bitrateKbps,
-        sampleRate: analysis.sampleRateHz,
-        channels: analysis.channels,
-        analysis: asJsonObject(analysis)
-      });
-      result.push(toUploadedSoundtrack({ ...record, localPath: safePath }, analysis));
+    const prepared = await runWithConcurrency<SoundtrackAssetRecord, UploadedSoundtrack | undefined>(
+      requested,
+      3,
+      async (record) => {
+      try {
+        const safePath = await runtime.storage.getSoundtrackPath(
+          input.user.id,
+          input.project.id,
+          record.localPath
+        );
+        const validation = await validateSoundtrackSource(safePath);
+        if (!validation.valid) {
+          throw new Error(validation.reason ?? "Soundtrack validation failed.");
+        }
+        const analysis =
+          storedAnalysis(record) ??
+          (await analyzeMp3FileWithFallback(safePath, record.originalFilename));
+        await this.repository.updateSoundtrack(input.user.id, input.project.id, record.id, {
+          duration: analysis.durationSec,
+          bitrate: analysis.bitrateKbps,
+          sampleRate: analysis.sampleRateHz,
+          channels: analysis.channels,
+          analysis: asJsonObject({ ...analysis, validationStatus: "valid" })
+        });
+        return toUploadedSoundtrack({ ...record, localPath: safePath }, analysis);
+      } catch (error) {
+        await this.repository.updateSoundtrack(input.user.id, input.project.id, record.id, {
+          analysis: {
+            validationStatus: "invalid",
+            error: messageFrom(error).slice(0, 1_000)
+          }
+        });
+        return undefined;
+      }
+      }
+    );
+    const result = prepared.filter(isDefined);
+    if (requested.length > 0 && result.length === 0) {
+      throw new Error("None of the selected MP3 soundtrack files passed audio validation.");
     }
     return result;
   }
@@ -285,45 +329,93 @@ export class AutoVlogPipelineAdapter implements ProjectPipelineAdapter {
     runtime: PipelineRenderRuntime,
     projectRoot: string
   ) {
-    const baseAssets: MediaAsset[] = [];
-    for (let uploadOrder = 0; uploadOrder < input.media.length; uploadOrder += 1) {
-      const record = input.media[uploadOrder]!;
-      const originalPath = await runtime.storage.getMediaPath(
-        input.user.id,
-        input.project.id,
-        record.localPath
-      );
-      const metadata = await extractMetadata({
-        filePath: originalPath,
-        filename: record.originalFilename,
-        mimeType: record.mimeType,
-        byteSize: record.size,
-        mediaType: record.type,
-        uploadOrder
-      });
-      const derived = processingPaths(projectRoot, record);
-      baseAssets.push({
-        id: record.id,
-        projectId: input.project.id,
-        filename: record.originalFilename,
-        mediaType: record.type,
-        uploadOrder,
-        storage: {
-          originalPath,
-          thumbnailPath: derived.thumbnailPath,
-          normalizedPath: record.type === "image" ? derived.normalizedPath : undefined,
-          proxyPath: record.type === "video" ? derived.proxyPath : undefined,
-          keyframeDir: record.type === "video" ? derived.keyframeDir : undefined
-        },
-        metadata,
-        userState: { pinned: false, excluded: false },
-        analysis: { selectionReasons: [], skipReasons: [] }
-      });
+    await runtime.updateProgress(7, "VALIDATING_MEDIA · checking uploads");
+    const candidates = await runWithConcurrency<MediaAssetRecord, MediaAsset | undefined>(
+      input.media,
+      8,
+      async (record, uploadOrder) => {
+      try {
+        const originalPath = await runtime.storage.getMediaPath(
+          input.user.id,
+          input.project.id,
+          record.localPath
+        );
+        const validation = await validateMediaSource(originalPath, record.type);
+        if (!validation.valid) {
+          throw new Error(validation.reason ?? "Media validation failed.");
+        }
+        const metadata = await extractMetadata({
+          filePath: originalPath,
+          filename: record.originalFilename,
+          mimeType: record.mimeType,
+          byteSize: record.size,
+          mediaType: record.type,
+          uploadOrder
+        });
+        const derived = processingPaths(projectRoot, record);
+        return {
+          id: record.id,
+          projectId: input.project.id,
+          filename: record.originalFilename,
+          mediaType: record.type,
+          uploadOrder,
+          storage: {
+            originalPath,
+            thumbnailPath: derived.thumbnailPath,
+            normalizedPath: record.type === "image" ? derived.normalizedPath : undefined,
+            proxyPath: record.type === "video" ? derived.proxyPath : undefined,
+            keyframeDir: record.type === "video" ? derived.keyframeDir : undefined
+          },
+          metadata: {
+            ...metadata,
+            durationSec: metadata.durationSec ?? validation.durationSec,
+            width: metadata.width ?? validation.width,
+            height: metadata.height ?? validation.height
+          },
+          userState: { pinned: false, excluded: false },
+          analysis: { selectionReasons: [], skipReasons: [] }
+        } satisfies MediaAsset;
+      } catch (error) {
+        const validationError = messageFrom(error).slice(0, 1_000);
+        await this.repository.updateMedia(input.user.id, input.project.id, record.id, {
+          analysis: {
+            ...record.analysis,
+            validationStatus: "invalid",
+            validationError
+          }
+        });
+        console.warn(`[render:${input.renderJob.id}] Skipping invalid media ${record.id}: ${validationError}`);
+        return undefined;
+      }
+      }
+    );
+    const baseAssets = candidates.filter(isDefined);
+    if (!baseAssets.length) {
+      throw new Error("No uploaded photos or videos passed media validation.");
     }
 
-    await runtime.updateProgress(12, "preprocessing media");
-    const preprocessed = await runWithConcurrency(baseAssets, 3, preprocessAsset);
-    await runtime.updateProgress(22, "scoring memories");
+    await runtime.updateProgress(13, "PREPARING_MEDIA · building or reusing proxies");
+    const prepared = await runWithConcurrency<MediaAsset, MediaAsset | undefined>(
+      baseAssets,
+      3,
+      async (asset) => {
+      try {
+        return await preprocessAsset(asset);
+      } catch (error) {
+        const processingError = messageFrom(error).slice(0, 1_000);
+        await this.repository.updateMedia(input.user.id, input.project.id, asset.id, {
+          analysis: { validationStatus: "invalid", processingError }
+        });
+        console.warn(`[render:${input.renderJob.id}] Skipping unprocessable media ${asset.id}: ${processingError}`);
+        return undefined;
+      }
+      }
+    );
+    const preprocessed = prepared.filter(isDefined);
+    if (!preprocessed.length) {
+      throw new Error("No validated media could be prepared for rendering.");
+    }
+    await runtime.updateProgress(22, "ANALYZING_MEDIA · scoring memories");
     let scored: MediaAsset[] = await scoreAssetsWithHeuristics(preprocessed);
     try {
       scored = mergePythonSuggestions(scored, await requestPythonSuggestions(scored));
@@ -331,19 +423,21 @@ export class AutoVlogPipelineAdapter implements ProjectPipelineAdapter {
       // The optional Python analysis sidecar is not required for a valid local render.
     }
 
-    await runtime.updateProgress(29, "analyzing story moments");
+    await runtime.updateProgress(29, "ANALYZING_MEDIA · finding story moments");
     let transcribed: MediaAsset[] = scored;
     try {
       transcribed = await enrichAssetsWithTranscription(scored);
     } catch {
       // Keep the deterministic local analysis if the Python sidecar is offline.
     }
-    const analyzed = applyQualityTiers(
-      clusterRecurringFaces(analyzeDuplicateMedia(transcribed))
+    const analyzed = enrichAssetsWithEditorialAnalysis(
+      applyQualityTiers(clusterRecurringFaces(analyzeDuplicateMedia(transcribed)))
     );
 
-    await Promise.all(
-      analyzed.map(async (asset) => {
+    await runWithConcurrency(
+      analyzed,
+      8,
+      async (asset) => {
         const thumbnailPath = (await fileExists(asset.storage.thumbnailPath))
           ? asset.storage.thumbnailPath
           : undefined;
@@ -359,11 +453,12 @@ export class AutoVlogPipelineAdapter implements ProjectPipelineAdapter {
           metadata: asJsonObject(asset.metadata),
           analysis: asJsonObject({
             ...asset.analysis,
+            validationStatus: "valid",
             score: asset.score,
             fingerprints: asset.fingerprints
           })
         });
-      })
+      }
     );
 
     let firstThumbnail: string | undefined;
@@ -386,14 +481,15 @@ export class AutoVlogPipelineAdapter implements ProjectPipelineAdapter {
       input.user.id,
       input.project.id
     );
-    const jobTempRoot = path.join(projectRoot, "temp", input.renderJob.id);
+    const jobTempRoot = await runtime.storage.getRenderTempRoot(
+      input.user.id,
+      input.project.id,
+      input.renderJob.id
+    );
     const metadataRoot = path.join(projectRoot, "metadata");
-    await Promise.all([
-      mkdir(jobTempRoot, { recursive: true }),
-      mkdir(metadataRoot, { recursive: true })
-    ]);
+    await mkdir(metadataRoot, { recursive: true });
 
-    await runtime.updateProgress(4, "validating project files");
+    await runtime.updateProgress(4, "VALIDATING_MEDIA · validating project files");
     const soundtracks = await this.prepareSoundtracks(input, runtime);
     const assets = await this.prepareMedia(input, runtime, projectRoot);
     const renderableAssets = assets.filter(
@@ -438,20 +534,19 @@ export class AutoVlogPipelineAdapter implements ProjectPipelineAdapter {
       storyPlan: createStoryPlan(renderProject)
     };
 
-    await runtime.updateProgress(36, "planning the AutoVlog");
+    await runtime.updateProgress(36, "PLANNING_STORY · building editorial decisions");
     const built = buildProjectTimelines(renderProject);
-    const timelines: Timeline[] =
-      input.project.generationMode === "wall-frame"
-        ? [built.masterTimeline]
-        : [built.masterTimeline, ...built.chapterTimelines];
+    const timelines: Timeline[] = balanceChapterSoundtracks([built.masterTimeline, ...built.chapterTimelines]);
     const progressSpan = 58 / Math.max(1, timelines.length);
 
     for (let index = 0; index < timelines.length; index += 1) {
       const timeline = timelines[index]!;
       const type = input.project.generationMode === "wall-frame"
-        ? "wall-frame"
+        ? timeline.kind === "master"
+          ? "wall-frame-master"
+          : "wall-frame-cluster"
         : timeline.kind;
-      const directory = type === "wall-frame" ? "wall-frame" : type;
+      const directory = input.project.generationMode === "wall-frame" ? "wall-frame" : timeline.kind;
       const outputPath = await runtime.storage.allocateRenderOutputPath(
         input.user.id,
         input.project.id,
@@ -467,16 +562,23 @@ export class AutoVlogPipelineAdapter implements ProjectPipelineAdapter {
         `${input.renderJob.id}-${timeline.id}-render-plan.json`
       );
       const baseProgress = 36 + index * progressSpan;
-      await runtime.updateProgress(baseProgress, `rendering ${type}`);
+      await runtime.updateProgress(baseProgress, `BUILDING_VISUALS · rendering ${type}`);
       const output = await renderTimeline(renderProject, timeline, {
         outputPath,
         timelinePath,
         renderPlanPath,
         tempRoot: jobTempRoot,
         onProgress: async (update) => {
+          const stage = /mix|audio|soundtrack/i.test(update.detail)
+            ? "MIXING_AUDIO"
+            : /final encod|mux/i.test(update.detail)
+              ? "FINAL_ENCODING"
+              : /validat/i.test(update.detail)
+                ? "VALIDATING_OUTPUT"
+                : "RENDERING_SEGMENTS";
           await runtime.updateProgress(
             baseProgress + update.progress * progressSpan,
-            `${type}: ${update.detail}`
+            `${stage} · ${type}: ${update.detail}`
           );
         }
       });
@@ -504,7 +606,7 @@ export class AutoVlogPipelineAdapter implements ProjectPipelineAdapter {
         input.user.id,
         input.project.id,
         input.renderJob.id,
-        { renderPlanPath: type === "wall-frame" ? renderPlanPath : timelinePath }
+        { renderPlanPath: input.project.generationMode === "wall-frame" ? renderPlanPath : timelinePath }
       );
       await runtime.registerOutput({
         type,
@@ -514,6 +616,6 @@ export class AutoVlogPipelineAdapter implements ProjectPipelineAdapter {
         thumbnailPath
       });
     }
-    await runtime.updateProgress(96, "finalizing outputs");
+    await runtime.updateProgress(96, "VALIDATING_OUTPUT · finalizing outputs");
   }
 }

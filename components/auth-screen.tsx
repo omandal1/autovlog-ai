@@ -63,7 +63,7 @@ export function AuthScreen() {
             </div>
             <div className="rounded-2xl border border-sky-200/10 bg-sky-200/[0.05] p-4">
               <div className="text-sm font-medium text-sky-100">Wall frame memories</div>
-              <p className="mt-1 text-xs leading-5 text-slate-400">Cinematic movement across a cozy gallery of moments.</p>
+              <p className="mt-1 text-xs leading-5 text-slate-400">Moving framed memories with camera push-ins, flips, slides, whip-pans, pull-backs, and fast cut-and-go transitions.</p>
             </div>
           </div>
         </div>

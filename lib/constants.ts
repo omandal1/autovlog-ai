@@ -168,7 +168,9 @@ export const DEFAULT_GENERATION_SETTINGS: GenerationSettings = {
     frameStyle: "mixed-scrapbook",
     wallStyle: "dorm-room-wall",
     cameraMotion: "balanced",
+    transitionEnergy: "balanced",
     captionStyle: "memory-captions",
+    frameVariety: "medium",
     aspectRatio: "landscape-16x9"
   }
 };

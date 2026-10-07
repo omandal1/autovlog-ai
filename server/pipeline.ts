@@ -1,5 +1,6 @@
-import { stat } from "node:fs/promises";
+import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 
 import { ApiError } from "./errors";
 import type {
@@ -13,6 +14,7 @@ import type {
 } from "./models";
 import type { AutoVlogRepository } from "./repository";
 import type { StorageProvider } from "./storage/storage-provider";
+import { assertValidVideoFile } from "@/lib/render/video-integrity";
 
 export interface PipelineOutputInput {
   type: RenderOutputType;
@@ -250,6 +252,65 @@ export class PipelineCoordinator {
 
   private async execute(input: PipelineRenderInput) {
     const { user, project, renderJob } = input;
+    const renderStartedMs = Date.now();
+    let activeStage = "QUEUED";
+    let activeStageStartedMs = renderStartedMs;
+    const stageDurationsMs: Record<string, number> = {};
+    let metricsPath: string | undefined;
+
+    const normalizedStage = (value: string) =>
+      (value.split(/[·:]/)[0] ?? value).trim().replace(/\s+/g, "_").toUpperCase();
+    const transitionStage = (nextValue: string) => {
+      const nextStage = normalizedStage(nextValue);
+      if (nextStage === activeStage) return false;
+      const now = Date.now();
+      stageDurationsMs[activeStage] =
+        (stageDurationsMs[activeStage] ?? 0) + now - activeStageStartedMs;
+      console.info(
+        `[render:${renderJob.id}] ${activeStage} ${(stageDurationsMs[activeStage] / 1_000).toFixed(2)}s -> ${nextStage}`
+      );
+      activeStage = nextStage;
+      activeStageStartedMs = now;
+      return true;
+    };
+    const persistMetrics = async (status: "processing" | "completed" | "failed", error?: unknown) => {
+      if (!metricsPath) return;
+      const now = Date.now();
+      const snapshotDurations = {
+        ...stageDurationsMs,
+        [activeStage]: (stageDurationsMs[activeStage] ?? 0) + now - activeStageStartedMs
+      };
+      const temporaryPath = `${metricsPath}.tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
+      await mkdir(path.dirname(metricsPath), { recursive: true });
+      await writeFile(
+        temporaryPath,
+        `${JSON.stringify({
+          renderJobId: renderJob.id,
+          projectId: project.id,
+          mode: project.generationMode,
+          mediaCount: input.media.length,
+          soundtrackCount: input.soundtracks.length,
+          status,
+          activeStage,
+          startedAt: new Date(renderStartedMs).toISOString(),
+          updatedAt: new Date(now).toISOString(),
+          elapsedSec: Number(((now - renderStartedMs) / 1_000).toFixed(3)),
+          stageTimingsSec: Object.fromEntries(
+            Object.entries(snapshotDurations).map(([stage, durationMs]) => [
+              stage,
+              Number((durationMs / 1_000).toFixed(3))
+            ])
+          ),
+          error: error ? errorMessage(error) : undefined
+        }, null, 2)}\n`,
+        "utf8"
+      );
+      // Windows does not consistently replace an existing destination with
+      // rename(). Metrics are refreshed at every stage, so remove only the
+      // previous metrics snapshot before atomically promoting the new one.
+      await rm(metricsPath, { force: true });
+      await rename(temporaryPath, metricsPath);
+    };
     try {
       await this.assertPersistedProjectActive(input);
       const startedJob = await this.repository.updateRenderJob(user.id, project.id, renderJob.id, {
@@ -272,10 +333,18 @@ export class PipelineCoordinator {
       }
 
       const guardedStorage = this.guardedStorage(user.id, project.id);
+      metricsPath = path.join(
+        await guardedStorage.getProjectStorageRoot(user.id, project.id),
+        "metadata",
+        `${renderJob.id}-metrics.json`
+      );
+      transitionStage("STARTING");
+      await persistMetrics("processing");
 
       const runtime: PipelineRenderRuntime = {
         storage: guardedStorage,
         updateProgress: async (progress, currentStage) => {
+          const stageChanged = transitionStage(currentStage);
           this.assertProjectActive(user.id, project.id);
           const updated = await this.repository.updateRenderJob(user.id, project.id, renderJob.id, {
             status: "processing",
@@ -285,6 +354,9 @@ export class PipelineCoordinator {
           this.assertProjectActive(user.id, project.id);
           if (!updated) {
             throw new ProjectRenderCancelledError();
+          }
+          if (stageChanged) {
+            await persistMetrics("processing");
           }
         },
         registerOutput: async (outputInput) => {
@@ -299,6 +371,16 @@ export class PipelineCoordinator {
           if (!fileStat.isFile() || fileStat.size === 0) {
             throw new Error("The render pipeline produced an empty output.");
           }
+          const validatedOutput = await assertValidVideoFile(localPath, {
+            label: `final ${outputInput.type} output`,
+            minBytes: 1024,
+            minDurationSec: 0.1,
+            requireH264: true,
+            requireYuv420p: true,
+            requireAudio: true,
+            requireAac: true,
+            decode: false
+          });
           if (outputInput.thumbnailPath) {
             await guardedStorage.resolveProjectPath(
               user.id,
@@ -314,7 +396,7 @@ export class PipelineCoordinator {
             type: outputInput.type,
             title: outputInput.title.slice(0, 160),
             localPath,
-            duration: outputInput.duration,
+            duration: validatedOutput.durationSec,
             size: fileStat.size,
             thumbnailPath: outputInput.thumbnailPath,
             createdAt: new Date()
@@ -358,6 +440,7 @@ export class PipelineCoordinator {
         throw new ProjectRenderCancelledError();
       }
       if (current.status !== "failed") {
+        transitionStage("COMPLETED");
         await this.repository.updateRenderJob(user.id, project.id, renderJob.id, {
           status: "completed",
           progress: 100,
@@ -365,11 +448,14 @@ export class PipelineCoordinator {
           completedAt: new Date()
         });
         await this.repository.updateProject(user.id, project.id, { status: "ready" });
+        await persistMetrics("completed");
       }
     } catch (error) {
       if (error instanceof ProjectRenderCancelledError) {
         return;
       }
+      transitionStage("FAILED");
+      await persistMetrics("failed", error).catch(() => undefined);
       await Promise.allSettled([
         this.repository.updateRenderJob(user.id, project.id, renderJob.id, {
           status: "failed",

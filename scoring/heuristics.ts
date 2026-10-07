@@ -3,7 +3,7 @@ import { readdir, stat } from "fs/promises";
 import sharp from "sharp";
 
 import type { MediaAsset, ScoreBreakdown } from "@/lib/types";
-import { average, clamp } from "@/lib/utils";
+import { average, clamp, runWithConcurrency } from "@/lib/utils";
 
 interface ImageAnalysis {
   brightness: number;
@@ -250,7 +250,7 @@ function mergeBreakdown(metrics: AssetMetrics, uniqueness: number, aiBoost = 0, 
 }
 
 export async function scoreAssetsWithHeuristics(assets: MediaAsset[]) {
-  const metrics = await Promise.all(assets.map((asset) => deriveMetrics(asset)));
+  const metrics = await runWithConcurrency(assets, 8, deriveMetrics);
 
   return assets.map((asset, index) => {
     const metric = metrics[index];

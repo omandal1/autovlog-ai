@@ -137,14 +137,16 @@ export function buildSourceAudioBedGraph(options: {
   }
 
   const filterChains = audioClips.map((clip, index) => {
+    const leadInSec = Math.max(0, clip.audioLeadInSec ?? 0);
+    const tailOutSec = Math.max(0, clip.audioTailOutSec ?? 0);
     const delayMs = Math.max(
       0,
-      Math.round((options.clipStartTimes.get(clip.id) ?? 0) * 1000)
+      Math.round(((options.clipStartTimes.get(clip.id) ?? 0) - leadInSec) * 1000)
     );
     const gainDb = clip.sourceAudio?.gainDb ?? 0;
     const audioDurationSec = Math.max(
       0.1,
-      Math.min(clip.trimDurationSec, clip.displayDurationSec)
+      Math.min(clip.trimDurationSec, clip.displayDurationSec) + leadInSec + tailOutSec
     );
     const fadeInSec = Number(Math.min(0.14, audioDurationSec / 4).toFixed(3));
     const fadeOutSec = Number(Math.min(0.18, audioDurationSec / 4).toFixed(3));
@@ -179,8 +181,9 @@ export function buildMusicBedGraph(timeline: Timeline) {
   }
 
   const filterChains = timeline.audioTracks.map((track, index) => {
-    const fadeInSec = Number(Math.min(track.crossfadeSec || 0.24, track.durationSec / 3).toFixed(3));
-    const fadeOutSec = Number(Math.min(track.crossfadeSec || 0.24, track.durationSec / 3).toFixed(3));
+    const defaultFade = timeline.soundtrackPlan?.sourcePolicy === "user-uploaded-audio" ? 0.025 : 0.24;
+    const fadeInSec = Number(Math.min(track.crossfadeSec || defaultFade, track.durationSec / 3).toFixed(3));
+    const fadeOutSec = Number(Math.min(track.crossfadeSec || defaultFade, track.durationSec / 3).toFixed(3));
     const fadeOutStart = Math.max(0, track.durationSec - fadeOutSec).toFixed(3);
     const delayMs = Math.max(0, Math.round(track.startSec * 1000));
 

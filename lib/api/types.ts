@@ -19,7 +19,7 @@ export type ProjectStatusDto =
   | "failed";
 
 export type RenderJobStatusDto = "queued" | "processing" | "completed" | "failed";
-export type RenderOutputTypeDto = "master" | "chapter" | "wall-frame";
+export type RenderOutputTypeDto = "master" | "chapter" | "wall-frame" | "wall-frame-master" | "wall-frame-cluster";
 export type MediaAssetTypeDto = "image" | "video";
 
 export type DiaryThemeDto =
@@ -32,7 +32,9 @@ export type PacingDto = "fast" | "balanced" | "slow-sentimental";
 export type WallFrameStyleDto = "classic-wood" | "modern-black" | "white-gallery" | "mixed-scrapbook";
 export type WallStyleDto = "warm-bedroom-wall" | "dorm-room-wall" | "clean-gallery-wall" | "corkboard-scrapbook-wall";
 export type CameraMotionDto = "slow-cinematic" | "balanced" | "energetic";
+export type TransitionEnergyDto = "gentle" | "balanced" | "high";
 export type CaptionStyleDto = "none" | "simple-dates" | "memory-captions" | "diary-style-notes";
+export type FrameVarietyDto = "low" | "medium" | "high";
 
 export interface DiaryStyleSettingsDto {
   themePreset: DiaryThemeDto;
@@ -43,7 +45,9 @@ export interface WallFrameStyleSettingsDto {
   frameStyle: WallFrameStyleDto;
   wallStyle: WallStyleDto;
   cameraMotion: CameraMotionDto;
+  transitionEnergy: TransitionEnergyDto;
   captionStyle: CaptionStyleDto;
+  frameVariety: FrameVarietyDto;
 }
 
 export interface GenerationSettingsDto {

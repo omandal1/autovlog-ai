@@ -20,7 +20,10 @@ const bodyFont = Space_Grotesk({
 export const metadata: Metadata = {
   title: `${APP_NAME} · Your private memory studio`,
   description:
-    "Create private diary-style films and cinematic wall-frame memory montages from your own photos, videos, and MP3 soundtracks."
+    "Create private diary-style films and cinematic wall-frame memory montages from your own photos, videos, and MP3 soundtracks.",
+  icons: {
+    icon: "/icon.svg"
+  }
 };
 
 export default function RootLayout({

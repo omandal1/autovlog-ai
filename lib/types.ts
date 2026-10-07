@@ -241,6 +241,143 @@ export interface MediaMetadata {
   byteSize: number;
 }
 
+export type EditorialStoryRole =
+  | "hook"
+  | "setup"
+  | "progression"
+  | "reaction"
+  | "conflict-change"
+  | "payoff"
+  | "b-roll"
+  | "bridge";
+
+export type EditorialShotType =
+  | "establishing"
+  | "wide"
+  | "medium"
+  | "tight"
+  | "detail"
+  | "reaction"
+  | "action"
+  | "environment"
+  | "transition";
+
+export interface CandidateSegment {
+  mediaAssetId: string;
+  startTime: number;
+  endTime: number;
+  duration: number;
+  segmentScore: number;
+  storyRole: EditorialStoryRole;
+  emotionScore: number;
+  audioScore: number;
+  visualScore: number;
+  continuityScore: number;
+  technicalScore: number;
+  reason: string;
+}
+
+export interface EditorialAnalysis {
+  mediaAssetId: string;
+  mediaType: MediaType;
+  timestamp?: string;
+  duration: number;
+  sceneSummary: string;
+  semanticTags: string[];
+  locationContext?: string;
+  peopleCount?: number;
+  facePresence: number;
+  dominantSubjects: string[];
+  activityType: string;
+  hookScore: number;
+  contextScore: number;
+  setupScore: number;
+  conflictScore: number;
+  resolutionScore: number;
+  storyImportanceScore: number;
+  emotionIntensityScore: number;
+  candidnessScore: number;
+  humanReactionScore: number;
+  microMomentScore: number;
+  laughterProbability?: number;
+  surpriseProbability?: number;
+  excitementProbability?: number;
+  speechPresence: number;
+  speechConfidence: number;
+  silenceRegions: Array<{ startSec: number; endSec: number }>;
+  pauseRegions: Array<{ startSec: number; endSec: number }>;
+  audioQualityScore: number;
+  shotScale: EditorialShotType;
+  cameraMotion: "static" | "low" | "medium" | "high";
+  brightness: number;
+  colorfulness: number;
+  visualNovelty: number;
+  compositionScore: number;
+  sharpness: number;
+  blurScore: number;
+  exposureScore: number;
+  motionDirection: "static" | "mixed" | "left-to-right" | "right-to-left" | "up" | "down";
+  dominantColor: string;
+  sceneLocation?: string;
+  subjectIdentityCluster?: string;
+  actionTags: string[];
+  entryMotion: string;
+  exitMotion: string;
+  technicalQualityScore: number;
+  duplicateScore: number;
+  redundancyScore: number;
+  usabilityScore: number;
+  candidateSegments: CandidateSegment[];
+  confidence: number;
+}
+
+export interface MatchCutCandidate {
+  fromAssetId: string;
+  toAssetId: string;
+  matchCutScore: number;
+  matchType: "motion" | "shot-scale" | "color" | "subject" | "none";
+  recommendedTransitionDuration: number;
+}
+
+export interface ClipDecision {
+  mediaAssetId: string;
+  sourceStart: number;
+  sourceEnd: number;
+  timelineStart: number;
+  duration: number;
+  storyRole: EditorialStoryRole;
+  shotType: EditorialShotType;
+  audioMode: "music" | "source" | "mixed";
+  transitionType?: string;
+  jCut: boolean;
+  lCut: boolean;
+  audioLeadIn: number;
+  audioTailOut: number;
+  reasonSelected: string[];
+  scoreBreakdown: Record<string, number>;
+}
+
+export interface SceneDecision {
+  sceneId: string;
+  purpose: string;
+  startTime: number;
+  targetDuration: number;
+  clips: ClipDecision[];
+  transitionIn?: string;
+  transitionOut?: string;
+}
+
+export interface EditDecisionList {
+  projectId: string;
+  outputType: OutputKind;
+  narrativeSummary: string;
+  hookSegment?: CandidateSegment;
+  scenes: SceneDecision[];
+  pacingCurve: number[];
+  totalDuration: number;
+  generatedAt: string;
+}
+
 export interface ScoreBreakdown {
   visualClarity: number;
   brightness: number;
@@ -484,6 +621,7 @@ export interface StoryPlan {
   skippedAssetIds: string[];
   reasonsByAssetId: Record<string, SelectionReason[]>;
   skipReasonsByAssetId: Record<string, SkipReason[]>;
+  narrativeSummary?: string;
 }
 
 export interface PreviewPlan {
@@ -528,6 +666,7 @@ export interface MediaAnalysis {
   selectionReasons?: SelectionReason[];
   skipReasons?: SkipReason[];
   dialogueEvents?: string[];
+  editorial?: EditorialAnalysis;
 }
 
 export interface MediaAsset {
@@ -582,6 +721,9 @@ export interface TimelineClip {
   trimStartSec: number;
   trimDurationSec: number;
   displayDurationSec: number;
+  sourceDurationSec?: number;
+  sourceWidth?: number;
+  sourceHeight?: number;
   score: number;
   hasSpeech?: boolean;
   sourceAudio?: {
@@ -596,9 +738,17 @@ export interface TimelineClip {
   capturedAt?: string;
   transcriptText?: string;
   sceneTags?: string[];
-  storyRole?: "opening" | "chapter-intro" | "highlight" | "bridge" | "closing";
+  storyRole?: "opening" | "chapter-intro" | "highlight" | "bridge" | "closing" | EditorialStoryRole;
   transitionName?: string;
   motionEffect?: MotionEffect;
+  shotType?: EditorialShotType;
+  audioLeadInSec?: number;
+  audioTailOutSec?: number;
+  jCutEnabled?: boolean;
+  lCutEnabled?: boolean;
+  reasonSelected?: string[];
+  editorialScoreBreakdown?: Record<string, number>;
+  matchCutFromPrevious?: MatchCutCandidate;
 }
 
 export interface TimelineTransition {
@@ -838,6 +988,7 @@ export interface Timeline {
   soundtrackPlan?: SoundtrackPlan;
   book?: BookRenderPlan;
   wallFrame?: WallFrameRenderPlan;
+  editDecisionList?: EditDecisionList;
   chapterOrder: string[];
   renderProfile: {
     width: number;

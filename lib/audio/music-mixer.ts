@@ -20,6 +20,18 @@ export function planLayeredMusicMix(timeline: Timeline) {
       : audioEmphasis === "original-audio-forward"
         ? -3.5
         : 0;
+  if (timeline.soundtrackPlan?.sourcePolicy === "user-uploaded-audio") {
+    // Keep a single uninterrupted source range per song/loop. Final mixing
+    // already ducks music under source audio; splitting at page boundaries
+    // introduced tiny fades and overlapping repeats on every visual change.
+    return {
+      ...timeline,
+      audioTracks: timeline.audioTracks.map((track) => ({
+        ...track,
+        volumeDb: track.volumeDb + emphasisOffsetDb
+      }))
+    };
+  }
   const clipStartTimes = calculateClipTimings(timeline);
   const pageStartTimes = timeline.book ? calculateBookPageTimings(timeline.book) : undefined;
   const clipWindows = timeline.book?.pages?.length

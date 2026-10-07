@@ -63,11 +63,24 @@ export async function extractMetadata(options: {
       toIsoDate(exif?.CreateDate) ??
       fallbackTimestamp;
 
+    let width = exif?.ImageWidth;
+    let height = exif?.ImageHeight;
+    if (!width || !height) {
+      try {
+        const { default: sharp } = await import("sharp");
+        const imageMetadata = await sharp(options.filePath).metadata();
+        width = imageMetadata.width;
+        height = imageMetadata.height;
+      } catch {
+        // Validation/preprocessing has format-specific fallbacks for unusual images.
+      }
+    }
+
     return {
       capturedAt,
       capturedAtSource: exif?.DateTimeOriginal || exif?.CreateDate ? "exif" : "filesystem",
-      width: exif?.ImageWidth,
-      height: exif?.ImageHeight,
+      width,
+      height,
       extension,
       mimeType: options.mimeType,
       byteSize: options.byteSize

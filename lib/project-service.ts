@@ -4,6 +4,7 @@ import { analyzeDuplicateMedia } from "@/lib/analysis/duplicate-detector";
 import { clusterRecurringFaces } from "@/lib/analysis/face-clustering";
 import { applyQualityTiers } from "@/lib/analysis/quality-filter";
 import { enrichAssetsWithTranscription } from "@/lib/analysis/transcription";
+import { enrichAssetsWithEditorialAnalysis } from "@/lib/editorial/editorial-planner";
 import { analyzeMp3FileWithFallback, validateMp3Upload } from "@/lib/audio/soundtrack-analysis";
 import { SOUNDTRACK_UPLOAD_POLICY } from "@/lib/constants";
 import { createId } from "@/lib/ids";
@@ -174,7 +175,7 @@ async function enrichAnalyzedAssets(assets: MediaAsset[]) {
   const transcribed = await enrichAssetsWithTranscription(assets);
   const duplicateAnalyzed = analyzeDuplicateMedia(transcribed);
   const clustered = clusterRecurringFaces(duplicateAnalyzed);
-  return applyQualityTiers(clustered);
+  return enrichAssetsWithEditorialAnalysis(applyQualityTiers(clustered));
 }
 
 async function saveAndAnalyzeSoundtracks(projectId: string, files: File[]) {

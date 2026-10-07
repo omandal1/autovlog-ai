@@ -8,7 +8,12 @@ export type ProjectStatus =
   | "failed";
 
 export type RenderJobStatus = "queued" | "processing" | "completed" | "failed";
-export type RenderOutputType = "master" | "chapter" | "wall-frame";
+export type RenderOutputType =
+  | "master"
+  | "chapter"
+  | "wall-frame"
+  | "wall-frame-master"
+  | "wall-frame-cluster";
 export type MediaAssetType = "image" | "video";
 
 export type JsonPrimitive = string | number | boolean | null;

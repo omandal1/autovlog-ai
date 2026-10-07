@@ -3,6 +3,7 @@ import path from "path";
 
 
 import { runFfmpeg } from "@/scripts/ffmpeg";
+import { validateVideoFile, writeAtomicVideo } from "@/lib/render/video-integrity";
 import type { MediaAsset, SkipReason } from "@/lib/types";
 import { getProjectPaths } from "@/storage/local-storage";
 
@@ -23,6 +24,38 @@ async function pathExists(filePath: string) {
   } catch {
     return false;
   }
+}
+
+async function isFreshNonemptyFile(sourcePath: string, outputPath: string) {
+  try {
+    const [source, output] = await Promise.all([stat(sourcePath), stat(outputPath)]);
+    return output.isFile() && output.size > 0 && output.mtimeMs >= source.mtimeMs;
+  } catch {
+    return false;
+  }
+}
+
+async function isFreshImage(sourcePath: string, outputPath: string) {
+  if (!(await isFreshNonemptyFile(sourcePath, outputPath))) return false;
+  try {
+    const { default: sharp } = await import("sharp");
+    const metadata = await sharp(outputPath).metadata();
+    return Boolean(metadata.width && metadata.height);
+  } catch {
+    return false;
+  }
+}
+
+async function isFreshProxy(sourcePath: string, outputPath: string) {
+  if (!(await isFreshNonemptyFile(sourcePath, outputPath))) return false;
+  const validation = await validateVideoFile(outputPath, {
+    minDurationSec: 0.05,
+    requireH264: true,
+    requireYuv420p: true,
+    fps: 30,
+    decode: false
+  });
+  return validation.valid;
 }
 
 function tempOutputPath(filePath: string) {
@@ -209,6 +242,17 @@ export async function preprocessAsset(asset: MediaAsset) {
       mkdir(path.dirname(normalizedPath), { recursive: true }),
       mkdir(path.dirname(thumbnailPath), { recursive: true })
     ]);
+    const [hasNormalized, hasThumbnail] = await Promise.all([
+      isFreshImage(asset.storage.originalPath, normalizedPath),
+      isFreshImage(asset.storage.originalPath, thumbnailPath)
+    ]);
+    if (hasNormalized && hasThumbnail) {
+      return {
+        ...asset,
+        storage: { ...asset.storage, normalizedPath, thumbnailPath }
+      };
+    }
+
     let usedFallback = false;
     let fallbackError: unknown;
 
@@ -278,67 +322,105 @@ export async function preprocessAsset(asset: MediaAsset) {
       ? 0
       : clamp(durationSec * 0.15, 0.04, Math.min(1.5, Math.max(0.04, durationSec - 0.04)));
 
-  try {
-    await runFfmpeg([
-      "-y",
-      "-ss",
-      thumbnailSeekSec.toFixed(3),
-      "-i",
-      asset.storage.originalPath,
-      "-frames:v",
-      "1",
-      "-vf",
-      "scale=480:320:force_original_aspect_ratio=decrease,pad=480:320:(ow-iw)/2:(oh-ih)/2:color=black",
-      thumbnailPath
-    ]);
-  } catch {
+  if (!(await isFreshImage(asset.storage.originalPath, thumbnailPath))) {
+    try {
+      await writeImageAtomically(thumbnailPath, (temporaryPath) =>
+        runFfmpeg([
+          "-y",
+          "-ss",
+          thumbnailSeekSec.toFixed(3),
+          "-i",
+          asset.storage.originalPath,
+          "-frames:v",
+          "1",
+          "-vf",
+          "scale=480:320:force_original_aspect_ratio=decrease,pad=480:320:(ow-iw)/2:(oh-ih)/2:color=black",
+          temporaryPath
+        ]).then(() => undefined)
+      );
+    } catch {
+      try {
+        await writeImageAtomically(thumbnailPath, (temporaryPath) =>
+          runFfmpeg([
+            "-y",
+            "-i",
+            asset.storage.originalPath,
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=480:320:force_original_aspect_ratio=decrease,pad=480:320:(ow-iw)/2:(oh-ih)/2:color=black",
+            temporaryPath
+          ]).then(() => undefined)
+        );
+      } catch {
+        // Ultra-short or odd videos can fail thumbnail extraction; scoring has a deterministic fallback.
+      }
+    }
+  }
+
+  if (!(await isFreshProxy(asset.storage.originalPath, proxyPath))) {
+    try {
+      await writeAtomicVideo({
+        outputPath: proxyPath,
+        label: `normalized proxy ${asset.filename}`,
+        validation: {
+          minDurationSec: Math.max(0.05, durationSec - 0.25),
+          requireH264: true,
+          requireYuv420p: true,
+          fps: 30,
+          decode: false
+        },
+        render: (temporaryPath) =>
+          runFfmpeg([
+            "-y",
+            "-i",
+            asset.storage.originalPath,
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0?",
+            "-vf",
+            "scale='min(960,iw)':-2:flags=lanczos,fps=30,setsar=1,format=yuv420p",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "24",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-movflags",
+            "+faststart",
+            temporaryPath
+          ])
+      });
+    } catch {
+      // Keep the original video as the render source when proxy generation fails.
+    }
+  }
+
+  const existingKeyframes = await readdir(keyframeDir).catch(() => []);
+  const firstKeyframe = existingKeyframes.find((name) => /\.(?:jpe?g|png)$/i.test(name));
+  const hasFreshKeyframes = firstKeyframe
+    ? await isFreshNonemptyFile(asset.storage.originalPath, path.join(keyframeDir, firstKeyframe))
+    : false;
+  if (!hasFreshKeyframes) {
     try {
       await runFfmpeg([
         "-y",
         "-i",
         asset.storage.originalPath,
-        "-frames:v",
-        "1",
         "-vf",
-        "scale=480:320:force_original_aspect_ratio=decrease,pad=480:320:(ow-iw)/2:(oh-ih)/2:color=black",
-        thumbnailPath
+        "fps=1/3,scale=640:-2",
+        path.join(keyframeDir, "frame-%03d.jpg")
       ]);
     } catch {
-      // Ultra-short or odd videos can fail thumbnail extraction; scoring has a deterministic fallback.
+      // Keyframes are useful for scoring, but missing keyframes should not fail the project.
     }
-  }
-
-  try {
-    await runFfmpeg([
-      "-y",
-      "-i",
-      asset.storage.originalPath,
-      "-vf",
-      "scale='min(960,iw)':-2",
-      "-an",
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-crf",
-      "24",
-      proxyPath
-    ]);
-  } catch {
-    // Keep the original video as the render source when proxy generation fails.
-  }
-
-  try {
-    await runFfmpeg([
-      "-y",
-      "-i",
-      asset.storage.originalPath,
-      "-vf",
-      "fps=1/3,scale=640:-2",
-      path.join(keyframeDir, "frame-%03d.jpg")
-    ]);
-  } catch {
-    // Keyframes are useful for scoring, but missing keyframes should not fail the project.
   }
 
   const [keyframeFiles, hasProxy] = await Promise.all([

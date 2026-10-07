@@ -18,6 +18,7 @@ export interface StorageProvider {
   initialize(): Promise<void>;
   saveUpload(input: SaveUploadInput): Promise<SavedFile>;
   getProjectStorageRoot(userId: string, projectId: string): Promise<string>;
+  getRenderTempRoot(userId: string, projectId: string, renderJobId: string): Promise<string>;
   getMediaPath(userId: string, projectId: string, storedPath: string): Promise<string>;
   getSoundtrackPath(userId: string, projectId: string, storedPath: string): Promise<string>;
   getRenderOutputPath(userId: string, projectId: string, storedPath: string): Promise<string>;

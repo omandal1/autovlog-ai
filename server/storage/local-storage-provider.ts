@@ -59,7 +59,10 @@ export class LocalStorageProvider implements StorageProvider {
   }
 
   async initialize() {
-    await mkdir(path.join(this.root, "users"), { recursive: true });
+    await Promise.all([
+      mkdir(path.join(this.root, "users"), { recursive: true }),
+      mkdir(path.join(this.root, ".render-temp"), { recursive: true })
+    ]);
   }
 
   private projectRoot(userId: string, projectId: string) {
@@ -94,6 +97,21 @@ export class LocalStorageProvider implements StorageProvider {
 
   async getProjectStorageRoot(userId: string, projectId: string) {
     return this.ensureProjectStructure(userId, projectId);
+  }
+
+  async getRenderTempRoot(userId: string, projectId: string, renderJobId: string) {
+    // Keep FFmpeg scratch paths shallow on Windows. Project-scoped temp paths can exceed
+    // the classic 260-character limit once attempt and atomic-output names are appended.
+    requireSafeId(userId, "User ID");
+    requireSafeId(projectId, "Project ID");
+    const target = path.join(
+      this.root,
+      ".render-temp",
+      requireSafeId(renderJobId, "Render job ID")
+    );
+    await mkdir(path.dirname(target), { recursive: true });
+    await mkdir(target);
+    return target;
   }
 
   async saveUpload(input: SaveUploadInput): Promise<SavedFile> {
@@ -188,14 +206,21 @@ export class LocalStorageProvider implements StorageProvider {
   }
 
   async cleanupTemp(userId: string, projectId: string, renderJobId?: string) {
+    requireSafeId(userId, "User ID");
+    requireSafeId(projectId, "Project ID");
+    if (renderJobId) {
+      const target = path.join(
+        this.root,
+        ".render-temp",
+        requireSafeId(renderJobId, "Render job ID")
+      );
+      await rm(target, { recursive: true, force: true });
+      return;
+    }
+
     const projectRoot = this.projectRoot(userId, projectId);
     const tempRoot = path.join(projectRoot, "temp");
-    const target = renderJobId
-      ? path.join(tempRoot, requireSafeId(renderJobId, "Render job ID"))
-      : tempRoot;
-    await rm(target, { recursive: true, force: true });
-    if (!renderJobId) {
-      await mkdir(tempRoot, { recursive: true });
-    }
+    await rm(tempRoot, { recursive: true, force: true });
+    await mkdir(tempRoot, { recursive: true });
   }
 }

@@ -22,6 +22,10 @@ import type {
   TimelineClip
 } from "@/lib/types";
 import { sortAssetsChronologically } from "@/media-processing/metadata";
+import {
+  createEditDecisionList,
+  findMatchCutCandidate
+} from "@/lib/editorial/editorial-planner";
 
 interface StyleProfile {
   imageDurationSec: number;
@@ -164,8 +168,31 @@ function toTimelineClip(
     (isMeaningfulContentText(asset.analysis?.transcript)
       ? normalizeContentText(asset.analysis?.transcript)
       : undefined);
+  const editorial = asset.analysis?.editorial;
+  const candidate = editorial?.candidateSegments[0];
+  const selectionReasons = [
+    candidate?.reason,
+    options?.storyRole === "opening"
+      ? "Selected as the opening hook from across the available scene, not by upload order."
+      : undefined,
+    editorial?.shotScale
+      ? `Provides ${editorial.shotScale} shot coverage and visual rhythm.`
+      : undefined
+  ].filter((reason): reason is string => Boolean(reason));
+  const editorialScoreBreakdown = editorial
+    ? {
+        story: editorial.storyImportanceScore,
+        emotion: editorial.emotionIntensityScore,
+        audio: editorial.speechPresence * editorial.audioQualityScore,
+        visual: editorial.visualNovelty * 0.45 + editorial.compositionScore * 0.55,
+        continuity: editorial.usabilityScore,
+        technical: editorial.technicalQualityScore,
+        redundancyPenalty: editorial.redundancyScore
+      }
+    : undefined;
 
   if (asset.mediaType === "image") {
+    const imageDurationSec = candidate?.duration ?? profile.imageDurationSec;
     return {
       id: createId("clip", 8),
       assetId: asset.id,
@@ -175,8 +202,10 @@ function toTimelineClip(
       audioSourcePath: undefined,
       normalizedPath: asset.storage.normalizedPath,
       trimStartSec: 0,
-      trimDurationSec: profile.imageDurationSec,
-      displayDurationSec: profile.imageDurationSec,
+      trimDurationSec: imageDurationSec,
+      displayDurationSec: imageDurationSec,
+      sourceWidth: asset.metadata.width,
+      sourceHeight: asset.metadata.height,
       score: asset.score?.total ?? 0,
       hasSpeech: false,
       sourceAudio: {
@@ -190,16 +219,19 @@ function toTimelineClip(
       transcriptText: contentTranscript,
       sceneTags: asset.analysis?.semanticHint ? [asset.analysis.semanticHint] : undefined,
       storyRole: options?.storyRole,
-      transitionName: options?.transitionName
+      transitionName: options?.transitionName,
+      shotType: editorial?.shotScale,
+      reasonSelected: selectionReasons,
+      editorialScoreBreakdown
     };
   }
 
   const sourceDuration = asset.metadata.durationSec ?? profile.maxVideoTrimSec;
-  const trimDurationSec = Math.min(
-    profile.maxVideoTrimSec,
-    Math.max(profile.minVideoTrimSec, sourceDuration * 0.75)
-  );
-  const trimStartSec = Math.max(0, (sourceDuration - trimDurationSec) / 2);
+  const trimDurationSec = candidate?.duration ?? Math.min(
+      profile.maxVideoTrimSec,
+      Math.max(profile.minVideoTrimSec, sourceDuration * 0.75)
+    );
+  const trimStartSec = candidate?.startTime ?? Math.max(0, (sourceDuration - trimDurationSec) / 2);
 
   return {
     id: createId("clip", 8),
@@ -211,6 +243,9 @@ function toTimelineClip(
     trimStartSec,
     trimDurationSec,
     displayDurationSec: trimDurationSec,
+    sourceDurationSec: sourceDuration,
+    sourceWidth: asset.metadata.width,
+    sourceHeight: asset.metadata.height,
     score: asset.score?.total ?? 0,
     hasSpeech: Boolean(contentTranscript?.trim()),
     sourceAudio: {
@@ -224,8 +259,50 @@ function toTimelineClip(
     transcriptText: contentTranscript,
     sceneTags: asset.analysis?.semanticHint ? [asset.analysis.semanticHint] : undefined,
     storyRole: options?.storyRole,
-    transitionName: options?.transitionName
+    transitionName: options?.transitionName,
+    shotType: editorial?.shotScale,
+    reasonSelected: selectionReasons,
+    editorialScoreBreakdown
   };
+}
+
+function applyEditorialContinuity(clips: TimelineClip[], assets: MediaAsset[]) {
+  const assetMap = new Map(assets.map((asset) => [asset.id, asset]));
+  return clips.map((clip, index) => {
+    const next = clips[index + 1];
+    const prior = clips[index - 1];
+    const jCutEnabled = Boolean(clip.hasSpeech && prior && !prior.hasSpeech && clip.mediaType === "video");
+    const lCutEnabled = Boolean(clip.hasSpeech && next && !next.hasSpeech && clip.mediaType === "video");
+    const previousAsset = prior ? assetMap.get(prior.assetId) : undefined;
+    const currentAsset = assetMap.get(clip.assetId);
+    const matchCutFromPrevious = previousAsset && currentAsset
+      ? findMatchCutCandidate(previousAsset, currentAsset)
+      : undefined;
+    return {
+      ...clip,
+      jCutEnabled,
+      lCutEnabled,
+      audioLeadInSec: jCutEnabled ? Math.min(0.65, clip.trimStartSec) : 0,
+      audioTailOutSec: lCutEnabled
+        ? Math.min(
+            0.65,
+            Math.max(0, (clip.sourceDurationSec ?? 0) - clip.trimStartSec - clip.trimDurationSec)
+          )
+        : 0,
+      matchCutFromPrevious,
+      transitionName:
+        matchCutFromPrevious && matchCutFromPrevious.matchCutScore >= 0.72
+          ? "fade"
+          : clip.transitionName,
+      reasonSelected:
+        matchCutFromPrevious && matchCutFromPrevious.matchCutScore >= 0.5
+          ? [
+              ...(clip.reasonSelected ?? []),
+              `Creates a ${matchCutFromPrevious.matchType} continuity bridge from the previous shot.`
+            ]
+          : clip.reasonSelected
+    };
+  });
 }
 
 function fitTimelineDuration(
@@ -246,7 +323,11 @@ function fitTimelineDuration(
     if (clip.mediaType === "image") {
       return clip.storyRole === "opening" || clip.storyRole === "closing" ? 12 : 9.4;
     }
-    return Math.min(11.5, Math.max(clip.trimDurationSec + 2.1, 5.2));
+    const availableSourceSec = Math.max(
+      clip.trimDurationSec,
+      (clip.sourceDurationSec ?? clip.trimStartSec + clip.trimDurationSec) - clip.trimStartSec
+    );
+    return Math.min(11.5, availableSourceSec);
   };
   let total = calculateEffectiveDuration(result);
 
@@ -321,7 +402,10 @@ function pickChapterAssets(
   chapterQuota: number,
   profile: StyleProfile
 ) {
-  const chronologicalAssets = sortAssetsChronologically(chapterAssets);
+  const uniqueAssets = chapterAssets.filter(
+    (asset) => asset.userState?.pinned || !asset.analysis?.duplicateAnalysis?.isDuplicate
+  );
+  const chronologicalAssets = uniqueAssets.length ? uniqueAssets : chapterAssets;
   if (!chronologicalAssets.length) {
     return [];
   }
@@ -396,7 +480,10 @@ function pickChapterAssets(
     }
   }
 
-  return sortAssetsChronologically(Array.from(selected.values()));
+  const order = new Map(chronologicalAssets.map((asset, index) => [asset.id, index]));
+  return Array.from(selected.values()).sort(
+    (left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0)
+  );
 }
 
 function pickFromCycle(cycle: readonly string[], index: number) {
@@ -491,11 +578,24 @@ function buildSingleTimeline(options: {
   const disallowed = options.usedAssetIds ?? new Set<string>();
   const chapterSelections = expandChapterSelections({
     chapterSelections: options.chapters.map((chapter) => {
-      const chapterAssets = sortAssetsChronologically(
-        options.assets.filter(
-          (asset) => chapter.assetIds.includes(asset.id) && !disallowed.has(asset.id)
-        )
-      );
+      const unorderedChapterAssets = options.assets.filter(
+          (asset) =>
+            chapter.assetIds.includes(asset.id) &&
+            (!disallowed.has(asset.id) ||
+              (options.kind === "master" &&
+                asset.id === options.project.storyPlan?.anchors.openingAssetId))
+        );
+      const preferredIds = options.project.storyPlan?.chapterPlans.find(
+        (plan) => plan.chapterId === chapter.id
+      )?.orderedAssetIds;
+      const preferredOrder = new Map(preferredIds?.map((assetId, index) => [assetId, index]) ?? []);
+      const chapterAssets = preferredIds?.length
+        ? [...unorderedChapterAssets].sort(
+            (left, right) =>
+              (preferredOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
+              (preferredOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER)
+          )
+        : sortAssetsChronologically(unorderedChapterAssets);
       const chapterQuota =
         options.kind === "master"
           ? Math.max(32, options.targetDurationSec / Math.max(options.chapters.length, 1) - 4)
@@ -556,7 +656,18 @@ function buildSingleTimeline(options: {
     });
   });
 
-  const dedupedSelection = dedupeTimelineClips(selectedClips);
+  let editorialClips = selectedClips;
+  if (options.kind === "master") {
+    const hookId = options.project.storyPlan?.anchors.openingAssetId;
+    const hookIndex = editorialClips.findIndex((clip) => clip.assetId === hookId);
+    if (hookIndex > 0) {
+      const [hook] = editorialClips.splice(hookIndex, 1);
+      hook.storyRole = "opening";
+      editorialClips.unshift(hook);
+    }
+  }
+  editorialClips = applyEditorialContinuity(editorialClips, options.assets);
+  const dedupedSelection = dedupeTimelineClips(editorialClips);
   const fitted = fitTimelineDuration(
     dedupedSelection.clips,
     options.targetDurationSec,
@@ -579,6 +690,7 @@ function buildSingleTimeline(options: {
       transitionSec: profile.transitionSec
     }
   };
+  timeline.editDecisionList = createEditDecisionList(timeline);
 
   return {
     timeline,
@@ -597,7 +709,7 @@ export function buildProjectTimelines(project: ProjectRecord) {
   const reservedAssets = new Set<string>();
   const wallFrameOnly = project.settings.generation?.generationMode === "wall-frame";
 
-  for (const chapter of wallFrameOnly ? [] : storyChapterOrder) {
+  for (const chapter of storyChapterOrder) {
     const chapterAssets = chapter.assetIds
       .map((assetId) => assetMap.get(assetId))
       .filter((asset): asset is MediaAsset => Boolean(asset));
